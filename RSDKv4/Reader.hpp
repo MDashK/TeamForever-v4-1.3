@@ -151,6 +151,17 @@ void GenerateELoadKeys(uint key1, uint key2);
 void FileRead(void *dest, int size);
 void FileSkip(int count);
 
+// Reads a 32-bit float stored little endian (the byte order of the data files), on any host byte order
+inline float FileReadFloat()
+{
+    byte b[4];
+    FileRead(b, 4);
+    uint bits = (uint)b[0] | ((uint)b[1] << 8) | ((uint)b[2] << 16) | ((uint)b[3] << 24);
+    float value;
+    memcpy(&value, &bits, sizeof(float));
+    return value;
+}
+
 inline size_t FillFileBuffer()
 {
     if (readPos + 0x2000 <= fileSize)

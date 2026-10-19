@@ -4,7 +4,11 @@
 #include "RetroEngine.hpp"
 
 #define TRACK_COUNT (0x10)
+#if RETRO_PLATFORM == RETRO_XBOX_360
+#define MUSBUFFER_SIZE   (0x1000000) // 16 MB per stream file (the largest track in both games is ~2 MB); the console has 512 MB in total
+#else
 #define MUSBUFFER_SIZE   (0x2000000)
+#endif
 #define STREAMFILE_COUNT (2)
 
 #define MIX_BUFFER_SAMPLES (256)

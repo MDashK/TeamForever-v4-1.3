@@ -68,8 +68,21 @@ inline void SetGameVolumes(int bgmVol, int sfxVol)
         sfxVolume = MAX_VOLUME;
 }
 
+#if RETRO_USING_SDL2
+extern SDL_AudioDeviceID audioDevice;
+#endif
+
 inline void ReleaseAudioDevice()
 {
+#if RETRO_USING_SDL2
+    // Stop the audio callback first: it mixes the music stream and the SFX buffers released below, and locks
+    // musicMutex. Left running, it used freed memory on exit (a freeze or crash on the Xbox 360)
+    if (audioEnabled) {
+        SDL_CloseAudioDevice(audioDevice);
+        audioEnabled = false;
+    }
+#endif
+
     StopMusic(true);
     StopAllSfx();
     ReleaseStageSfx();
@@ -77,6 +90,7 @@ inline void ReleaseAudioDevice()
 
     if (musicMutex)
         SDL_DestroyMutex(musicMutex);
+    musicMutex = NULL;
 }
 
 #endif // !AUDIO_H

@@ -1,0 +1,39 @@
+Sonic 1 Forever / Sonic 2 Absolute para Xbox 360 - teste em hardware v1 (19/10/2026)
+=====================================================================================
+
+Conteúdo
+--------
+  Sonic1Forever\   default.xex + Data.rsdk + mods\ (o mod "Sonic 1 Forever")
+  Sonic2Absolute\  default.xex + Data\ + Scripts\ + mods\
+
+Instalação
+----------
+1. Copiar CADA pasta inteira por FTP, por exemplo para Hdd1:\Games\Sonic1Forever\ e Hdd1:\Games\Sonic2Absolute\
+   (o jogo escreve settings.ini, SData.bin, UData.bin e rsdkv4.log na própria pasta, por isso tem de ser um
+   disco gravável: HDD ou USB).
+2. Arrancar o default.xex de cada pasta pelo Aurora / FSD / XeXMenu.
+
+Controlos (comando 1)
+---------------------
+  D-pad / analógico esquerdo = direcções, A = A (saltar), B = B, X = C, Y = Y, LB = X, RB = Z,
+  LT = L, RT = R, START = Start, BACK = Select.
+
+O que testar
+------------
+- Arranque: logótipos, ecrã de título, música e efeitos sonoros.
+- Menus de cada jogo (Save Select, Opções) e começar um jogo.
+- Jogar uma zona inteira em cada jogo; se possível uma Special Stage.
+- Fluidez: deve correr a 60 FPS. Notar onde houver quebras ou engasgos.
+- Gravar/continuar: sair do jogo pelo menu (EXIT) e voltar a entrar; o save deve manter-se.
+- Sair pelo menu deve voltar ao dashboard (Aurora/FSD) sem reiniciar a consola.
+
+Depois do teste, trazer por FTP
+-------------------------------
+- Sonic1Forever\rsdkv4.log e Sonic2Absolute\rsdkv4.log
+  (têm os tempos de carregamento e, a cada 10 s, uma linha "Perf" com o tempo por frame; se houver crash,
+  o registo do crash com os endereços "!!! CRASH").
+
+Notas
+-----
+- Vídeos (.ogv) não estão implementados; nenhum dos dois jogos os usa.
+- Os saves (SData.bin, UData.bin) usam o mesmo formato do PC: podem ser copiados entre PC e consola.

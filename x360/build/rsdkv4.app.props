@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The RSDKv4 application, shared by rsdkv4_s1f.vcxproj (Sonic 1 Forever) and rsdkv4_s2a.vcxproj (Sonic 2 Absolute).
+  The two projects only differ in X360GameDefine (S1F_BUILD / S2A_BUILD, as in the PS3 makefiles) and X360GameFolder.
+  Import after x360.common.props.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <!-- Linker output and symbols (default.elf, for addr2sym.py) stay in the build tree; the XEX goes to the game folder -->
+    <OutDir>$(MSBuildThisFileDirectory)out\$(Configuration)\$(X360GameFolder)\</OutDir>
+    <X360DeployDir>$(X360Root)deploy\$(X360GameFolder)\</X360DeployDir>
+    <X360LibDir>$(MSBuildThisFileDirectory)out\$(Configuration)\</X360LibDir>
+    <RxdkClangLibs>$(X360LibDir)oggvorbis.lib;$(X360LibDir)sdl2lite.lib;$(X360LibDir)x360runtime.lib</RxdkClangLibs>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>$(X360GameDefine);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- The engine was written for x86/ARM, where plain char is signed; it is unsigned on PowerPC by default -->
+      <AdditionalOptions>-fsigned-char %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(RSDKRoot)RSDKv4;$(RSDKRoot)RSDKv4\NativeObjects;$(RSDKRoot)dependencies\all\tinyxml2;$(RSDKRoot)dependencies\all\theoraplay;$(RSDKRoot)dependencies\all\stb-image;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>xapilib.lib;d3d9.lib;xaudio2.lib;x3daudio.lib;xmcore.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ImageXex>
+      <ImageXexOutput>$(X360DeployDir)default.xex</ImageXexOutput>
+    </ImageXex>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="$(RSDKRoot)RSDKv4\*.cpp" />
+    <!-- Pulls in every NativeObjects\ps3\*.cpp (the PS3 port's native menus) -->
+    <ClCompile Include="$(RSDKRoot)RSDKv4\NativeObjects\All.cpp" />
+    <ClCompile Include="$(RSDKRoot)dependencies\all\tinyxml2\tinyxml2.cpp" />
+    <ClCompile Include="$(X360Root)port\*.cpp" />
+  </ItemGroup>
+  <Target Name="X360MakeDeployDir" BeforeTargets="Link">
+    <MakeDir Directories="$(X360DeployDir)" />
+  </Target>
+</Project>

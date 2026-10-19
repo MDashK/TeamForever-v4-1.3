@@ -13,6 +13,54 @@ bool engineDebugMode = false;
 #include <unistd.h>
 #endif
 
+#if RETRO_PLATFORM == RETRO_XBOX_360
+#include <SDL_x360.h>
+
+// Frame timing on the console, logged every 600 frames: the game update (scripts, objects and the software
+// rendering of the frame, all inside ProcessNativeObjects), and FlipScreen (texture upload and present, which
+// includes the wait for the vertical blank). Xenia's timing says nothing about the hardware's.
+namespace X360FrameProfiler
+{
+static Uint64 frameStartTicks = 0, updateEndTicks = 0, lastFrameStartTicks = 0;
+static double updateMs = 0, flipMs = 0, frameMs = 0, worstUpdateMs = 0;
+static int frames = 0, slowFrames = 0;
+
+inline double ticksToMs(Uint64 ticks) { return ticks * 1000.0 / (double)SDL_GetPerformanceFrequency(); }
+
+inline void frameStart()
+{
+    frameStartTicks = SDL_GetPerformanceCounter();
+    if (lastFrameStartTicks) {
+        double ms = ticksToMs(frameStartTicks - lastFrameStartTicks);
+        frameMs += ms;
+        if (ms > 17.5)
+            ++slowFrames;
+    }
+    lastFrameStartTicks = frameStartTicks;
+}
+
+inline void updateDone()
+{
+    updateEndTicks = SDL_GetPerformanceCounter();
+    double ms = ticksToMs(updateEndTicks - frameStartTicks);
+    updateMs += ms;
+    if (ms > worstUpdateMs)
+        worstUpdateMs = ms;
+}
+
+inline void flipDone()
+{
+    flipMs += ticksToMs(SDL_GetPerformanceCounter() - updateEndTicks);
+    if (++frames == 600) {
+        PrintLog("Perf (avg of %d frames): frame %.2f ms (%.1f FPS), update+render %.2f ms (worst %.2f), flip %.2f ms, %d frames over 17.5 ms", frames,
+                 frameMs / frames, 1000.0 * frames / frameMs, updateMs / frames, worstUpdateMs, flipMs / frames, slowFrames);
+        updateMs = flipMs = frameMs = worstUpdateMs = 0;
+        frames = slowFrames = 0;
+    }
+}
+} // namespace X360FrameProfiler
+#endif
+
 RetroEngine Engine = RetroEngine();
 
 #if !RETRO_USE_ORIGINAL_CODE
@@ -525,12 +573,19 @@ void RetroEngine::Run()
         sysUtilCheckCallback();
 #endif
 #if !RETRO_USE_ORIGINAL_CODE
-        //if (!vsync) {
+#if RETRO_PLATFORM == RETRO_XBOX_360
+        // With VSync, SDL_RenderPresent (FlipScreen) waits for the vertical blank and paces the loop by itself:
+        // a timer cap on top of it makes frames miss the blank now and then
+        SDL_X360_SetPresentInterval(Engine.vsync ? 1 : 0);
+        if (!Engine.vsync) {
+#endif
             curTicks = SDL_GetPerformanceCounter();
             if (curTicks < prevTicks + targetFreq)
                 continue;
             prevTicks = curTicks;
-        //}
+#if RETRO_PLATFORM == RETRO_XBOX_360
+        }
+#endif
 
         Engine.deltaTime = 1.0 / 60;
 #endif
@@ -554,6 +609,9 @@ void RetroEngine::Run()
             Engine.focusState = 0;
         }
 
+#if RETRO_PLATFORM == RETRO_XBOX_360
+        X360FrameProfiler::frameStart();
+#endif
         if (!(Engine.focusState & 1) || vsPlaying) {
 #if !RETRO_USE_ORIGINAL_CODE
             for (int s = 0; s < gameSpeed; ++s) {
@@ -570,10 +628,16 @@ void RetroEngine::Run()
             }
         }
 
+#if RETRO_PLATFORM == RETRO_XBOX_360
+        X360FrameProfiler::updateDone();
+#endif
 #if !RETRO_USE_ORIGINAL_CODE
         if (!masterPaused || frameStep) {
 #endif
             FlipScreen();
+#if RETRO_PLATFORM == RETRO_XBOX_360
+            X360FrameProfiler::flipDone();
+#endif
 
 #if !RETRO_USE_ORIGINAL_CODE
 #if RETRO_USING_OPENGL && RETRO_USING_SDL2

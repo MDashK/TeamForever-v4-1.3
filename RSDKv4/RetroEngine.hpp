@@ -9,7 +9,8 @@
 #define RETRO_USE_ORIGINAL_CODE (0)
 
 #define RETRO_USE_MOD_LOADER (!RETRO_USE_ORIGINAL_CODE && 1)
-#if RETRO_PLATFORM == RETRO_PS3
+// (RETRO_PLATFORM isn't defined yet here, so test the compiler defines; no networking on PS3 and Xbox 360)
+#if defined(PS3) || defined(_XBOX)
 #define RETRO_USE_NETWORKING (0) // Deshabilitar networking para PS3
 #else
 #define RETRO_USE_NETWORKING (!RETRO_USE_ORIGINAL_CODE && 1)
@@ -52,6 +53,10 @@ typedef unsigned int uint;
     #define RETRO_PS3        (RETRO_PS3_ENUM) // Actual define for RETRO_PS3
     #define RETRO_PLATFORM   (RETRO_PS3)
     #define RETRO_DEVICETYPE (RETRO_STANDARD)
+#elif defined(_XBOX)
+// Xbox 360 (RXDK-360 clang toolchain, see x360/README.md). Checked before _WIN32, which the toolchain also defines.
+#define RETRO_PLATFORM   (RETRO_XBOX_360)
+#define RETRO_DEVICETYPE (RETRO_STANDARD)
 #elif defined _WIN32
 
 #if defined WINAPI_FAMILY
@@ -110,13 +115,16 @@ typedef unsigned int uint;
         // For now, let's make it an error to ensure a conscious choice is made.
         #error "PS3 Build type (S1F_BUILD or S2A_BUILD) not defined for BASE_PATH!"
     #endif
+#elif RETRO_PLATFORM == RETRO_XBOX_360
+    // Each game is its own XEX in its own folder: data, settings and saves live next to default.xex
+    #define BASE_PATH "game:\\"
 #else
     #define BASE_PATH "./" // Default for other platforms
 #endif
 #endif
 
 #if RETRO_PLATFORM == RETRO_WIN || RETRO_PLATFORM == RETRO_OSX || RETRO_PLATFORM == RETRO_LINUX || RETRO_PLATFORM == RETRO_UWP                       \
-    || RETRO_PLATFORM == RETRO_ANDROID || RETRO_PLATFORM == RETRO_SWITCH || RETRO_PLATFORM == RETRO_PS3
+    || RETRO_PLATFORM == RETRO_ANDROID || RETRO_PLATFORM == RETRO_SWITCH || RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360
 #define RETRO_USING_SDL1 (0)
 #define RETRO_USING_SDL2 (1)
 #else // Since its an else & not an elif these platforms probably aren't supported yet
@@ -320,6 +328,10 @@ enum RetroGameType {
 
 #include "cocoaHelpers.hpp"
 
+#elif RETRO_PLATFORM == RETRO_XBOX_360
+// SDL2-lite (x360/sdl2lite): SDL2's own headers, implemented on top of the XDK
+#include <SDL.h>
+#include <vorbis/vorbisfile.h>
 #elif RETRO_PLATFORM == RETRO_PS3
 #include <SDL2/SDL.h>
 #include <vorbis/vorbisfile.h> // Asumiendo que libvorbis est� disponible para PS3

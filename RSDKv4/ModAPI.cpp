@@ -20,12 +20,37 @@ char modScriptPaths[OBJECT_COUNT][0x40];
 byte modScriptFlags[OBJECT_COUNT];
 byte modObjCount = 0;
 
-#if RETRO_PLATFORM != RETRO_PS3
+// The Xbox 360 takes the PS3's POSIX (stat / opendir) code: with the RXDK toolchain, std::filesystem's Windows
+// variant (wchar_t paths) doesn't match the runtime library
+#define RETRO_MODS_USE_POSIX (RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360)
+
+#if !RETRO_MODS_USE_POSIX
 #include <filesystem>
 #include <locale>
 #else
 #include <sys/stat.h>
 #include <dirent.h>
+#endif
+
+#if RETRO_PLATFORM == RETRO_XBOX_360
+#include <SDL_x360.h>
+// The paths built here ("game:\/mods/<mod>/Data/...") become "game:\mods\<mod>\Data\..." for the console's file system
+static int X360Stat(const char *path, struct stat *st)
+{
+    char normalized[0x200];
+    if (SDL_X360_NormalizePath(path, normalized, sizeof(normalized)) < 0)
+        return -1;
+    return stat(normalized, st);
+}
+static DIR *X360OpenDir(const char *path)
+{
+    char normalized[0x200];
+    if (SDL_X360_NormalizePath(path, normalized, sizeof(normalized)) < 0)
+        return NULL;
+    return opendir(normalized);
+}
+#define stat(path, st) X360Stat(path, st)
+#define opendir(path)  X360OpenDir(path)
 #endif
 
 int OpenModMenu()
@@ -35,7 +60,7 @@ int OpenModMenu()
     return 1;
 }
 
-#if RETRO_PLATFORM != RETRO_PS3
+#if !RETRO_MODS_USE_POSIX
 #if (RETRO_PLATFORM == RETRO_ANDROID)
 namespace fs = std::__fs::filesystem; // this is so we can avoid using c++17, which causes a ton of warnings w asio and looks ugly
 #else
@@ -80,7 +105,7 @@ void InitMods()
     char modBuf[0x100];
     sprintf(modBuf, "%s/mods", modsPath);
 
-#if RETRO_PLATFORM != RETRO_PS3
+#if !RETRO_MODS_USE_POSIX
     fs::path modPath = resolvePath(modBuf);
 
     if (fs::exists(modPath) && fs::is_directory(modPath)) {

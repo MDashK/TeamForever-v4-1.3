@@ -52,6 +52,16 @@ int sendCounter = 0; // Default value
 #include <sys/types.h>
 #endif
 
+#if RETRO_PLATFORM == RETRO_XBOX_360
+// XInput can't read the guide button: Select defaults to BACK on the 360
+#define RETRO_DEFAULT_SELECT_BUTTON SDL_CONTROLLER_BUTTON_BACK
+// Save files (SData.bin, SGame.bin, UData.bin) keep the PC's little endian layout, so saves can be moved between PC and console
+#define SAVEFILE_INT(value) ((int)SDL_SwapLE32((Uint32)(value)))
+#else
+#define RETRO_DEFAULT_SELECT_BUTTON SDL_CONTROLLER_BUTTON_GUIDE
+#define SAVEFILE_INT(value) (value)
+#endif
+
 #if !RETRO_USE_ORIGINAL_CODE
 
 bool forceUseScripts          = true;
@@ -132,6 +142,9 @@ bool ReadSaveRAMData()
     }
     fRead(saveRAM, sizeof(int), SAVEDATA_SIZE, saveFile);
     fClose(saveFile);
+#if RETRO_PLATFORM == RETRO_XBOX_360
+    for (int i = 0; i < SAVEDATA_SIZE; ++i) saveRAM[i] = SAVEFILE_INT(saveRAM[i]);
+#endif
     return true;
 }
 
@@ -201,7 +214,13 @@ bool WriteSaveRAMData()
     FileIO *saveFile = fOpen(buffer, "wb");
     if (!saveFile)
         return false;
+#if RETRO_PLATFORM == RETRO_XBOX_360
+    static int saveFileData[SAVEDATA_SIZE];
+    for (int i = 0; i < SAVEDATA_SIZE; ++i) saveFileData[i] = SAVEFILE_INT(saveRAM[i]);
+    fWrite(saveFileData, sizeof(int), SAVEDATA_SIZE, saveFile);
+#else
     fWrite(saveRAM, sizeof(int), SAVEDATA_SIZE, saveFile);
+#endif
     fClose(saveFile);
     return true;
 }
@@ -345,7 +364,7 @@ void InitUserdata()
 #endif
 
         bool initialFullScreenState = DEFAULT_FULLSCREEN;
-#if RETRO_PLATFORM == RETRO_PS3
+#if RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360
         initialFullScreenState = true;
 #endif
         Engine.startFullScreen = initialFullScreenState; // Keep Engine.startFullScreen consistent
@@ -394,7 +413,7 @@ void InitUserdata()
         ini.SetInteger("Controller 1", "L", inputDevice[INPUT_BUTTONL].contMappings = SDL_CONTROLLER_BUTTON_ZL);
         ini.SetInteger("Controller 1", "R", inputDevice[INPUT_BUTTONR].contMappings = SDL_CONTROLLER_BUTTON_ZR);
         ini.SetInteger("Controller 1", "Start", inputDevice[INPUT_START].contMappings = SDL_CONTROLLER_BUTTON_START);
-        ini.SetInteger("Controller 1", "Select", inputDevice[INPUT_SELECT].contMappings = SDL_CONTROLLER_BUTTON_GUIDE);
+        ini.SetInteger("Controller 1", "Select", inputDevice[INPUT_SELECT].contMappings = RETRO_DEFAULT_SELECT_BUTTON);
 
         ini.SetFloat("Controller 1", "LStickDeadzone", LSTICK_DEADZONE = 0.3);
         ini.SetFloat("Controller 1", "RStickDeadzone", RSTICK_DEADZONE = 0.3);
@@ -506,7 +525,7 @@ void InitUserdata()
 
         if (!ini.GetBool("Window", "FullScreen", &Engine.startFullScreen))
             Engine.startFullScreen = DEFAULT_FULLSCREEN;
-#if RETRO_PLATFORM == RETRO_PS3
+#if RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360
         Engine.startFullScreen = true; // Force fullscreen ON for PS3, overriding INI
 #endif
         if (!ini.GetBool("Window", "Borderless", &Engine.borderless))
@@ -605,7 +624,7 @@ void InitUserdata()
         if (!ini.GetInteger("Controller 1", "Start", &inputDevice[INPUT_START].contMappings))
             inputDevice[INPUT_START].contMappings = SDL_CONTROLLER_BUTTON_START;
         if (!ini.GetInteger("Controller 1", "Select", &inputDevice[INPUT_SELECT].contMappings))
-            inputDevice[INPUT_SELECT].contMappings = SDL_CONTROLLER_BUTTON_GUIDE;
+            inputDevice[INPUT_SELECT].contMappings = RETRO_DEFAULT_SELECT_BUTTON;
 
         if (!ini.GetFloat("Controller 1", "LStickDeadzone", &LSTICK_DEADZONE))
             LSTICK_DEADZONE = 0.3;
@@ -825,7 +844,7 @@ void WriteSettings()
 #endif
 
     ini.SetComment("Window", "FSComment", "Determines if the window will be fullscreen or not");
-#if RETRO_PLATFORM == RETRO_PS3
+#if RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360
     Engine.startFullScreen = true; // Ensure the value about to be saved is true for PS3
 #endif
     ini.SetBool("Window", "FullScreen", Engine.startFullScreen);
@@ -959,11 +978,11 @@ void ReadUserdata()
     int buf = 0;
     for (int a = 0; a < ACHIEVEMENT_COUNT; ++a) {
         fRead(&buf, 4, 1, userFile);
-        achievements[a].status = buf;
+        achievements[a].status = SAVEFILE_INT(buf);
     }
     for (int l = 0; l < LEADERBOARD_COUNT; ++l) {
         fRead(&buf, 4, 1, userFile);
-        leaderboards[l].score = buf;
+        leaderboards[l].score = SAVEFILE_INT(buf);
         if (!leaderboards[l].score)
             leaderboards[l].score = 0x7FFFFFF;
     }
@@ -1010,8 +1029,14 @@ void WriteUserdata()
     if (!userFile)
         return;
 
-    for (int a = 0; a < ACHIEVEMENT_COUNT; ++a) fWrite(&achievements[a].status, 4, 1, userFile);
-    for (int l = 0; l < LEADERBOARD_COUNT; ++l) fWrite(&leaderboards[l].score, 4, 1, userFile);
+    for (int a = 0; a < ACHIEVEMENT_COUNT; ++a) {
+        int value = SAVEFILE_INT(achievements[a].status);
+        fWrite(&value, 4, 1, userFile);
+    }
+    for (int l = 0; l < LEADERBOARD_COUNT; ++l) {
+        int value = SAVEFILE_INT(leaderboards[l].score);
+        fWrite(&value, 4, 1, userFile);
+    }
 
     fClose(userFile);
 

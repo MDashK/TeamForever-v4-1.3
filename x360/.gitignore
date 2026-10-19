@@ -1,0 +1,10 @@
+# The repository's .gitignore ignores every "build/" and "release/" folder (Visual Studio outputs):
+# here they hold the port's sources (MSBuild projects, release templates)
+!/build/
+!/release/
+
+# Build outputs, and the game folders (XEX + game data, settings, saves, logs)
+/build/obj/
+/build/out/
+/deploy/
+__pycache__/

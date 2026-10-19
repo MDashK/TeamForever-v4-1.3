@@ -33,8 +33,14 @@ SDL_AudioSpec audioDeviceFormat;
 
 #define AUDIO_FREQUENCY (44100)
 #define AUDIO_FORMAT    (AUDIO_S16SYS) /**< Signed 16-bit samples */
+#if RETRO_PLATFORM == RETRO_XBOX_360
+// Stereo (the SFX panning needs it), and XAudio2 keeps 3 buffers queued: 0x400 frames each keeps the latency at ~70 ms
+#define AUDIO_SAMPLES   (0x400)
+#define AUDIO_CHANNELS  (2)
+#else
 #define AUDIO_SAMPLES   (0x800)
 #define AUDIO_CHANNELS  (1)
+#endif
 
 #define ADJUST_VOLUME(s, v) (s = (s * v) / MAX_VOLUME)
 #endif

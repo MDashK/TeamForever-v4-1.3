@@ -6,9 +6,28 @@
 #endif
 
 extern bool endLine;
+
+#if RETRO_PLATFORM == RETRO_XBOX_360
+// x360/port/x360_platform.cpp: appends to game:\rsdkv4.log from a background thread (writes to the console's
+// storage are slow) and to the kernel debug output (xenia.log)
+void X360_WriteLog(const char *text, bool endOfLine);
+#endif
+
 inline void PrintLog(const char *msg, ...)
 {
 #ifndef RETRO_DISABLE_LOG
+#if RETRO_PLATFORM == RETRO_XBOX_360
+    {
+        // Always logged: there is no console to enable it from
+        char buffer[0x400];
+        va_list args;
+        va_start(args, msg);
+        vsnprintf(buffer, sizeof(buffer), msg, args);
+        va_end(args);
+        X360_WriteLog(buffer, endLine);
+        return;
+    }
+#endif
     if (engineDebugMode) {
         char buffer[0x100];
 
@@ -49,6 +68,19 @@ inline void PrintLog(const char *msg, ...)
 inline void PrintLog(const ushort *msg)
 {
 #ifndef RETRO_DISABLE_LOG
+#if RETRO_PLATFORM == RETRO_XBOX_360
+    {
+        char buffer[0x400];
+        int pos = 0;
+        while (msg[pos] && pos < (int)sizeof(buffer) - 1) {
+            buffer[pos] = (msg[pos] < 0x80) ? (char)msg[pos] : '?';
+            ++pos;
+        }
+        buffer[pos] = 0;
+        X360_WriteLog(buffer, endLine);
+        return;
+    }
+#endif
     if (engineDebugMode) {
         int mPos = 0;
         while (msg[mPos]) {

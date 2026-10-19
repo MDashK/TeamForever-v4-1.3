@@ -852,10 +852,10 @@ MeshInfo *LoadMesh(const char *filePath, byte textureID)
 
             for (int v = 0; v < mesh->vertexCount; ++v) {
                 float buf = 0;
-                FileRead(&buf, sizeof(float));
+                buf = FileReadFloat();
                 mesh->vertices[v].texCoordX = buf;
 
-                FileRead(&buf, sizeof(float));
+                buf = FileReadFloat();
                 mesh->vertices[v].texCoordY = buf;
 
                 mesh->vertices[v].r = 0xFF;
@@ -888,22 +888,22 @@ MeshInfo *LoadMesh(const char *filePath, byte textureID)
             if (mesh->frameCount <= 1) {
                 for (int v = 0; v < mesh->vertexCount; ++v) {
                     float buf = 0;
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].vertX = buf;
 
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].vertY = buf;
 
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].vertZ = buf;
 
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].normalX = buf;
 
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].normalY = buf;
 
-                    FileRead(&buf, sizeof(float));
+                    buf = FileReadFloat();
                     mesh->vertices[v].normalZ = buf;
                 }
             }
@@ -913,22 +913,22 @@ MeshInfo *LoadMesh(const char *filePath, byte textureID)
                     int frameOff = (f * mesh->vertexCount);
                     for (int v = 0; v < mesh->vertexCount; ++v) {
                         float buf = 0;
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].vertX = buf;
 
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].vertY = buf;
 
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].vertZ = buf;
 
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].normalX = buf;
 
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].normalY = buf;
 
-                        FileRead(&buf, sizeof(float));
+                        buf = FileReadFloat();
                         mesh->frames[frameOff + v].normalZ = buf;
                     }
                 }
