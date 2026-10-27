@@ -31,6 +31,12 @@ These ports are based on the original PS3 development by DropSonic0. Huge Specia
 * Solid 60 FPS, everything seems to be working correctly
 * Full and complete playthrough still needed
 
+## Changelog:
+
+### v1.1
+* Loading times optimized;
+* Fixed bug that could lead to a possible Audio crash.
+
 ---------------------------
 
 Original Read-Me:
