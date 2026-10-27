@@ -104,6 +104,26 @@ The templates (setup scripts, readmes) are in `release/`. The setup scripts call
 | `Debug.hpp` | `PrintLog` always goes to `game:\rsdkv4.log` (written by a background thread) and to `DbgPrint` (`xenia.log`), instead of opening `log.txt` for every line |
 | `Reader.hpp`, `Renderer.cpp` (all platforms) | 3D model (`R3D`) floats were read as raw host-order floats: now read as little endian (`FileReadFloat`). A real big-endian bug of the PS3 port |
 
+### Loading and audio fixes from the PS Vita port (24/10)
+
+The same engine was ported to the PS Vita, where these were found and fixed; they are ported here as they were (the cache code is the Vita's, switched on for `RETRO_PLATFORM == RETRO_XBOX_360`).
+
+| Where | Fix |
+|---|---|
+| `Sprite.cpp` `RemoveGraphicsFile` (all platforms) | Every stage load removes all sprite sheets, and each removal shifted the whole 64 MB graphics buffer down one byte at a time: up to 24 x 64 MB of byte copies per load. Now a `memmove` of only the part in use |
+| `Sprite.cpp` (`RETRO_GFX_CACHE`) | Decoded sprite sheets are kept between loads (24 MB budget) |
+| `SFX.cpp` (`RETRO_SFX_CACHE`) | Converted sound effects are kept between loads (16 MB budget) |
+| `Script.cpp`, `Scene.cpp` (`RETRO_SCRIPT_CACHE`) | The compiled scripts (globals, and each stage's on top of them) are snapshotted and restored on later loads (stages within 24 MB, least recently used first). In Sonic 1 Forever, entering the credits compiles every zone's scripts first, so the zone demos between the credit cards load from the cache. `game:\verifyscriptcache.txt` present: always compile and compare with the cache (`[scriptcache] verify ...: OK` in the log) |
+| `Scene.cpp` | The mod folders are no longer rescanned on every load (their file lists are built at boot) |
+| `RetroEngine.cpp` `LoadGameConfig` | All three caches are dropped (boot, mod changes) |
+| `Audio.hpp`, `Music.hpp`, `SFX.hpp` | `LockAudioDevice()` was `SDL_LockAudio()`, which locks the legacy device 1 while the engine's device is 2: it never excluded the audio thread. Now `SDL_LockAudioDevice(audioDevice)` |
+| `Music.cpp` (`RETRO_ASYNC_MUSIC`) | One music loader thread instead of a new thread per track change: requests are numbered (a newer request or `StopMusic` supersedes a running load; before, a track requested during another load was dropped), the file is read with `ReadWholeFileThreadSafe` (`Reader.cpp`; the engine's file reader is global state the game thread uses at the same time), and the stream slot is swapped in under `musicMutex` |
+| `SFX.cpp` | OGG sound effects (all of Sonic 2 Absolute's) were decoded from the music's stream buffers, switching `currentStreamIndex` under the playing track: they now use their own memory buffer |
+| `String.cpp` | `GenerateMD5FromString` (used by every file lookup) had a `static` work buffer: now local, as the music loader looks files up from its thread |
+| `Script.cpp` | `COMMONALIAS_COUNT` matches the built-in aliases (0x78; the last platform aliases were wiped on every script reset), and jump table ids use integer math instead of `pow()` |
+
+Every load logs `[load] stage loaded in N ms`, and every track change `music: loaded '...' in N ms`; with `EngineDebugMode=true` in `settings.ini`, each phase of the load is logged too. In Xenia: first stage ~750 ms (compiles the global scripts), a new stage ~250 ms, a stage visited before ~20 ms.
+
 Checked and fine on big endian: the data pack reader and its MD5 (byte-assembled), scene/tile/object/GIF/palette loading, the script compiler and bytecode reader, string lists (UTF-16 assembled from bytes), save structures (all `int`).
 
 ## State (19/10/2026)

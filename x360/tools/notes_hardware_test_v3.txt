@@ -1,0 +1,39 @@
+Sonic 1 Forever / Sonic 2 Absolute para Xbox 360 - teste em hardware v3 (24/10/2026)
+=====================================================================================
+
+Novidades desde a v2 (as correcções do port da Vita)
+----------------------------------------------------
+Loadings:
+- Ao libertar os gráficos em cada loading, o motor copiava o buffer inteiro de 64 MB byte a byte, uma vez por
+  cada folha de sprites (até 24 por loading). Agora só move a parte em uso.
+- Os scripts compilados, os sons e os sprites ficam em cache entre loadings: voltar a um nível já visitado
+  é quase instantâneo; o primeiro nível ainda compila os scripts globais.
+- As pastas do mod deixaram de ser varridas em cada loading.
+- Sonic 1 Forever: ao entrar nos créditos, compila primeiro os scripts de todas as zonas (com o ecrã ainda
+  preto), para as demos entre os cartões carregarem depressa.
+
+Áudio (o crash que apareceu na Vita):
+- O lock do áudio nunca bloqueava nada: agora bloqueia de facto.
+- A música passa a carregar num único thread próprio, com leitura de ficheiros segura entre threads;
+  antes cada troca de música criava um thread que usava o leitor de ficheiros do jogo ao mesmo tempo que o jogo.
+- Os SFX em OGG (todos os do Sonic 2) usavam os buffers da música que estava a tocar: agora têm o seu.
+
+Instalação
+----------
+Igual às anteriores: copiar Sonic1Forever\ e Sonic2Absolute\ por FTP (ex.: Hdd1:\Games\) e substituir.
+Os saves e o settings.ini das pastas antigas podem ficar.
+
+O que testar
+------------
+- Tempo dos loadings entre níveis, e voltar a níveis já visitados (deve ser quase imediato).
+- Créditos do Sonic 1: a música e os cartões devem ficar sincronizados.
+- Música: trocas (sapatos rápidos, invencibilidade, fim de nível, boss) sem engasgos nem cortes.
+- Som: todos os SFX, especialmente no Sonic 2 (são OGG).
+- Menu principal <-> Save Select várias vezes seguidas (foi aí que crashou na Vita).
+- EXIT continua a voltar ao dashboard.
+
+Depois do teste, trazer por FTP
+-------------------------------
+- Sonic1Forever\rsdkv4.log e Sonic2Absolute\rsdkv4.log: cada loading regista "[load] stage loaded in N ms"
+  e cada troca de música "music: loaded '...' in N ms".
+- Para ver o tempo de cada fase do loading, pôr EngineDebugMode=true no settings.ini antes de jogar.

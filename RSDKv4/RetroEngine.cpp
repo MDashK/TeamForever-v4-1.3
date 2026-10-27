@@ -1222,6 +1222,15 @@ bool RetroEngine::LoadGameConfig(const char *filePath)
     StrCopy(gameWindowText, "Retro-Engine"); // this is the default window name
 
     globalVariablesCount = 0;
+#if RETRO_SCRIPT_CACHE
+    ScriptCacheInvalidate(); // new config or different mods: the compiled globals may change
+#endif
+#if RETRO_SFX_CACHE
+    ClearSfxCache();
+#endif
+#if RETRO_GFX_CACHE
+    ClearGfxCache();
+#endif
 #if RETRO_USE_MOD_LOADER
     playerCount = 0;
 #endif

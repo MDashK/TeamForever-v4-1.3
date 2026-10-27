@@ -11,6 +11,10 @@
 
 #define RETRO_USE_COMPILER (1)
 
+// keep the compiled global and stage scripts between stage loads (Xbox 360, as in the PS Vita port: loading is slow there;
+// desktop users may edit scripts live)
+#define RETRO_SCRIPT_CACHE (RETRO_USE_COMPILER && !RETRO_USE_ORIGINAL_CODE && RETRO_PLATFORM == RETRO_XBOX_360)
+
 struct ScriptPtr {
     int scriptCodePtr;
     int jumpTablePtr;
@@ -150,5 +154,17 @@ void LoadBytecode(int stageListID, int scriptID);
 void ProcessScript(int scriptCodePtr, int jumpTablePtr, byte scriptSub);
 
 void ClearScriptData(void);
+
+#if RETRO_SCRIPT_CACHE
+void ScriptCacheInvalidate();
+bool ScriptCacheVerifyMode();
+void ScriptCacheSave(int keyA, int keyB);
+bool ScriptCacheRestore(int keyA, int keyB);
+bool ScriptCacheVerify(int keyA, int keyB);
+void ScriptCacheSaveStage(const char *folder, int scriptIDStart, int keyA, int keyB);
+bool ScriptCacheRestoreStage(const char *folder, int scriptIDStart, int keyA, int keyB);
+bool ScriptCacheVerifyStage(const char *folder, int scriptIDStart, int keyA, int keyB);
+bool ScriptCacheHasStage(const char *folder, int scriptIDStart, int keyA, int keyB);
+#endif
 
 #endif // !SCRIPT_H

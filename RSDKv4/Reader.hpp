@@ -136,6 +136,9 @@ int CheckFileInfo(const char *filepath);
 #endif
 
 bool LoadFile(const char *filePath, FileInfo *fileInfo);
+#if !RETRO_USE_ORIGINAL_CODE
+int ReadWholeFileThreadSafe(const char *filePath, byte *dest, int maxSize);
+#endif
 inline bool CloseFile()
 {
     int result = 0;

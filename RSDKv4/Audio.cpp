@@ -94,6 +94,10 @@ int InitAudioPlayback()
     LoadGlobalSfx();
 
     musicMutex = SDL_CreateMutex();
+#if RETRO_ASYNC_MUSIC
+    if (audioEnabled)
+        InitMusicLoader();
+#endif
 
     return true;
 }

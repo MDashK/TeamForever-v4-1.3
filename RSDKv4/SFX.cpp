@@ -100,7 +100,42 @@ void SetSfxName(const char *sfxName, int sfxID)
     PrintLog("Set SFX (%d) name to: %s", sfxID, sfxName);
 }
 
-void LoadSfx(char *filePath, byte sfxID)
+#if !RETRO_USE_ORIGINAL_CODE
+// in-memory ogg reader used for ogg sound effects (from the PS Vita port)
+struct MemoryVorbisFile {
+    byte *data;
+    int size;
+    int pos;
+};
+static size_t memReadVorbis(void *mem, size_t size, size_t nmemb, void *ptr)
+{
+    MemoryVorbisFile *file = (MemoryVorbisFile *)ptr;
+    int n                  = (int)(size * nmemb);
+    if (n > file->size - file->pos)
+        n = file->size - file->pos;
+    if (n > 0) {
+        memcpy(mem, &file->data[file->pos], n);
+        file->pos += n;
+    }
+    return n > 0 ? n : 0;
+}
+static int memSeekVorbis(void *ptr, ogg_int64_t offset, int whence)
+{
+    MemoryVorbisFile *file = (MemoryVorbisFile *)ptr;
+    switch (whence) {
+        case SEEK_SET: whence = 0; break;
+        case SEEK_CUR: whence = file->pos; break;
+        case SEEK_END: whence = file->size; break;
+        default: break;
+    }
+    file->pos = (int)(whence + offset);
+    return 0;
+}
+static long memTellVorbis(void *ptr) { return ((MemoryVorbisFile *)ptr)->pos; }
+static int memCloseVorbis(void *ptr) { return 1; }
+#endif
+
+static void LoadSfxFromFile(char *filePath, byte sfxID)
 {
     if (!audioEnabled)
         return;
@@ -173,26 +208,24 @@ void LoadSfx(char *filePath, byte sfxID)
             long samples;
             int read, toRead;
 
-            currentStreamIndex++;
-            currentStreamIndex %= STREAMFILE_COUNT;
-
-            StreamFile *sfxFile = &streamFile[currentStreamIndex];
-            sfxFile->filePos    = 0;
-            sfxFile->fileSize   = info.vfileSize;
-            if (info.vfileSize > MUSBUFFER_SIZE)
-                sfxFile->fileSize = MUSBUFFER_SIZE;
-
-            FileRead(streamFile[currentStreamIndex].buffer, sfxFile->fileSize);
+            // The file goes into its own buffer: this used to borrow the music's stream buffers (and switch currentStreamIndex),
+            // overwriting the track that was playing (fix from the PS Vita port; Sonic 2 Absolute's sound effects are all OGG)
+            MemoryVorbisFile sfxFile;
+            sfxFile.size = info.vfileSize;
+            sfxFile.pos  = 0;
+            sfxFile.data = new byte[sfxFile.size > 0 ? sfxFile.size : 1];
+            FileRead(sfxFile.data, sfxFile.size);
             CloseFile();
 
-            callbacks.read_func  = readVorbis;
-            callbacks.seek_func  = seekVorbis;
-            callbacks.tell_func  = tellVorbis;
-            callbacks.close_func = closeVorbis;
+            callbacks.read_func  = memReadVorbis;
+            callbacks.seek_func  = memSeekVorbis;
+            callbacks.tell_func  = memTellVorbis;
+            callbacks.close_func = memCloseVorbis;
 
-            int error = ov_open_callbacks(sfxFile, &vf, NULL, 0, callbacks);
+            int error = ov_open_callbacks(&sfxFile, &vf, NULL, 0, callbacks);
             if (error != 0) {
                 ov_clear(&vf);
+                delete[] sfxFile.data;
                 PrintLog("failed to load ogg sfx!");
                 return;
             }
@@ -220,6 +253,7 @@ void LoadSfx(char *filePath, byte sfxID)
                 if (read < 0) {
                     free(audioBuf);
                     ov_clear(&vf);
+                    delete[] sfxFile.data;
                     PrintLog("failed to read ogg sfx!");
                     return;
                 }
@@ -228,6 +262,7 @@ void LoadSfx(char *filePath, byte sfxID)
             }
 
             ov_clear(&vf); // clears & closes vorbis file
+            delete[] sfxFile.data;
 
             samplesize = ((spec.format & 0xFF) / 8) * spec.channels;
             audioLen &= ~(samplesize - 1);
@@ -264,6 +299,65 @@ void LoadSfx(char *filePath, byte sfxID)
         }
 #endif
     }
+}
+#if RETRO_SFX_CACHE
+// Converted sound effects are kept between stage loads (stage sfx are released and reloaded on every load otherwise)
+// (same cache as the PS Vita port)
+#include <map>
+#include <string>
+struct CachedSfx {
+    Sint16 *buffer;
+    size_t length;
+};
+static std::map<std::string, CachedSfx> sfxCache;
+static size_t sfxCacheBytes = 0;
+#define SFXCACHE_BUDGET (16 * 1024 * 1024)
+
+void ClearSfxCache()
+{
+    for (auto &entry : sfxCache) free(entry.second.buffer);
+    sfxCache.clear();
+    sfxCacheBytes = 0;
+}
+#endif
+
+void LoadSfx(char *filePath, byte sfxID)
+{
+#if RETRO_SFX_CACHE
+    if (audioEnabled) {
+        auto it = sfxCache.find(filePath);
+        if (it != sfxCache.end()) {
+            Sint16 *buffer = (Sint16 *)malloc(it->second.length * sizeof(Sint16));
+            if (buffer) {
+                memcpy(buffer, it->second.buffer, it->second.length * sizeof(Sint16));
+                LockAudioDevice();
+                StrCopy(sfxList[sfxID].name, filePath);
+                sfxList[sfxID].buffer = buffer;
+                sfxList[sfxID].length = it->second.length;
+                sfxList[sfxID].loaded = true;
+                UnlockAudioDevice();
+                return;
+            }
+        }
+    }
+#endif
+
+    LoadSfxFromFile(filePath, sfxID);
+
+#if RETRO_SFX_CACHE
+    if (audioEnabled && sfxList[sfxID].loaded && sfxList[sfxID].buffer && StrComp(sfxList[sfxID].name, filePath)
+        && sfxCache.find(filePath) == sfxCache.end()) {
+        size_t bytes = sfxList[sfxID].length * sizeof(Sint16);
+        if (sfxCacheBytes + bytes <= SFXCACHE_BUDGET) {
+            Sint16 *copy = (Sint16 *)malloc(bytes);
+            if (copy) {
+                memcpy(copy, sfxList[sfxID].buffer, bytes);
+                sfxCache[filePath] = { copy, sfxList[sfxID].length };
+                sfxCacheBytes += bytes;
+            }
+        }
+    }
+#endif
 }
 void PlaySfx(int sfx, bool loop)
 {

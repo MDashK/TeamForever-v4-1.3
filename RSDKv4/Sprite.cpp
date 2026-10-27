@@ -235,7 +235,14 @@ void RemoveGraphicsFile(const char *filePath, int sheetID)
         StrCopy(gfxSurface[sheetID].fileName, "");
         int dataPosStart = gfxSurface[sheetID].dataPosition;
         int dataPosEnd   = gfxSurface[sheetID].dataPosition + gfxSurface[sheetID].height * gfxSurface[sheetID].width;
+#if !RETRO_USE_ORIGINAL_CODE
+        // only the sheets after this one need to move down: the original shifted the entire 64MB buffer one byte at a time
+        // for every sheet removed (every stage load removes all of them). nothing past gfxDataPosition is ever read.
+        if (gfxDataPosition > dataPosEnd)
+            memmove(&graphicData[dataPosStart], &graphicData[dataPosEnd], gfxDataPosition - dataPosEnd);
+#else
         for (int i = GFXDATA_SIZE - dataPosEnd; i > 0; --i) graphicData[dataPosStart++] = graphicData[dataPosEnd++];
+#endif
         gfxDataPosition -= gfxSurface[sheetID].height * gfxSurface[sheetID].width;
         for (int i = 0; i < SURFACE_COUNT; ++i) {
             if (gfxSurface[i].dataPosition > gfxSurface[sheetID].dataPosition)
@@ -303,7 +310,7 @@ int LoadBMPFile(const char *filePath, byte sheetID)
     }
     return false;
 }
-int LoadGIFFile(const char *filePath, byte sheetID)
+static int LoadGIFFileFromFile(const char *filePath, byte sheetID)
 {
     FileInfo info;
     if (LoadFile(filePath, &info)) {
@@ -380,6 +387,72 @@ int LoadGIFFile(const char *filePath, byte sheetID)
         return true;
     }
     return false;
+}
+
+#if RETRO_GFX_CACHE
+// Decoded sprite sheets are kept between stage loads: every load removes all sheets and re-decodes the gifs otherwise
+// (same cache as the PS Vita port)
+#include <map>
+#include <string>
+#include <vector>
+struct CachedSheet {
+    int width, height;
+    std::vector<byte> pixels;
+};
+static std::map<std::string, CachedSheet> gfxCache;
+static size_t gfxCacheBytes = 0;
+#define GFXCACHE_BUDGET (24 * 1024 * 1024)
+
+void ClearGfxCache()
+{
+    gfxCache.clear();
+    gfxCacheBytes = 0;
+}
+#endif
+
+int LoadGIFFile(const char *filePath, byte sheetID)
+{
+#if RETRO_GFX_CACHE
+    auto it = gfxCache.find(filePath);
+    if (it != gfxCache.end()) {
+        const CachedSheet &sheet = it->second;
+        int size                 = sheet.width * sheet.height;
+        if (gfxDataPosition + size < GFXDATA_SIZE) {
+            GFXSurface *surface = &gfxSurface[sheetID];
+            StrCopy(surface->fileName, filePath);
+            surface->width        = sheet.width;
+            surface->height       = sheet.height;
+            surface->dataPosition = gfxDataPosition;
+#if RETRO_SOFTWARE_RENDER
+            surface->widthShift = 0;
+            int w               = surface->width;
+            while (w > 1) {
+                w >>= 1;
+                ++surface->widthShift;
+            }
+#endif
+            memcpy(&graphicData[gfxDataPosition], sheet.pixels.data(), size);
+            gfxDataPosition += size;
+            return true;
+        }
+    }
+#endif
+
+    int result = LoadGIFFileFromFile(filePath, sheetID);
+
+#if RETRO_GFX_CACHE
+    GFXSurface *surface = &gfxSurface[sheetID];
+    int size            = surface->width * surface->height;
+    if (result && size > 0 && StrComp(surface->fileName, filePath) && surface->dataPosition + size <= gfxDataPosition
+        && gfxCacheBytes + size <= GFXCACHE_BUDGET) {
+        CachedSheet &sheet = gfxCache[filePath];
+        sheet.width        = surface->width;
+        sheet.height       = surface->height;
+        sheet.pixels.assign(&graphicData[surface->dataPosition], &graphicData[surface->dataPosition] + size);
+        gfxCacheBytes += size;
+    }
+#endif
+    return result;
 }
 int LoadPVRFile(const char *filePath, byte sheetID)
 {

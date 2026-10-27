@@ -7,7 +7,16 @@
 #define MAX_VOLUME (100)
 #define MIX_BUFFER_SAMPLES (256)
 
-#if RETRO_USING_SDL1 || RETRO_USING_SDL2
+#if RETRO_USING_SDL2
+
+// SDL_LockAudio() only locks the legacy device id 1, but the engine opens its device with SDL_OpenAudioDevice (ids start at 2),
+// so it never actually excluded the audio thread: sounds and music could be changed or freed while being mixed
+// (fix from the PS Vita port)
+extern SDL_AudioDeviceID audioDevice;
+#define LockAudioDevice()   SDL_LockAudioDevice(audioDevice)
+#define UnlockAudioDevice() SDL_UnlockAudioDevice(audioDevice)
+
+#elif RETRO_USING_SDL1
 
 #define LockAudioDevice()   SDL_LockAudio()
 #define UnlockAudioDevice() SDL_UnlockAudio()
@@ -88,9 +97,12 @@ inline void ReleaseAudioDevice()
     ReleaseStageSfx();
     ReleaseGlobalSfx();
 
+#if !RETRO_ASYNC_MUSIC
+    // (with the music loader thread, the mutex is kept: the loader may still be finishing a load, and the process is ending)
     if (musicMutex)
         SDL_DestroyMutex(musicMutex);
     musicMutex = NULL;
+#endif
 }
 
 #endif // !AUDIO_H

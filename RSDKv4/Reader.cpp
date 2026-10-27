@@ -369,6 +369,148 @@ bool LoadFile(const char *filePath, FileInfo *fileInfo)
     }
 }
 
+#if !RETRO_USE_ORIGINAL_CODE
+static void GenerateELoadKeysLocal(uint key1, uint key2, byte *strA, byte *strB)
+{
+    char buffer[0x20];
+    uint hash[0x4];
+
+    ConvertIntegerToString(buffer, key1);
+    GenerateMD5FromString(buffer, StrLength(buffer), &hash[0], &hash[1], &hash[2], &hash[3]);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) strA[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
+
+    ConvertIntegerToString(buffer, key2);
+    GenerateMD5FromString(buffer, StrLength(buffer), &hash[0], &hash[1], &hash[2], &hash[3]);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) strB[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
+}
+
+int mulUnsignedHigh(uint arg1, int arg2);
+
+// From the PS Vita port. Reads a whole file into dest, resolving it exactly like LoadFile does (mod folders, loose files, data packs incl. decryption),
+// but without touching any of the global reader state, so it's safe to call from another thread while the game loads files.
+// Returns the number of bytes read (clamped to maxSize), or -1 if the file wasn't found.
+int ReadWholeFileThreadSafe(const char *filePath, byte *dest, int maxSize)
+{
+    char pathBuf[0x100];
+    StrCopy(pathBuf, filePath);
+    bool fromPack = true;
+
+#if RETRO_USE_MOD_LOADER
+    char pathLower[0x100];
+    memset(pathLower, 0, sizeof(pathLower));
+    for (int c = 0; c < (int)strlen(pathBuf) && c < 0xFF; ++c) pathLower[c] = tolower(pathBuf[c]);
+
+    bool addPath = true;
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (modList[m].active) {
+            std::map<std::string, std::string>::const_iterator iter = modList[m].fileMap.find(pathLower);
+            if (iter != modList[m].fileMap.cend()) {
+                StrCopy(pathBuf, iter->second.c_str());
+                fromPack = false;
+                addPath  = false;
+                break;
+            }
+        }
+    }
+#else
+    bool addPath = true;
+#endif
+
+    if (fromPack) {
+        char lowerName[0x100];
+        StringLowerCase(lowerName, filePath);
+        int fileIndex = CheckFileInfo(lowerName);
+        if (fileIndex != -1) {
+            RSDKFileInfo *file = &rsdkContainer.files[fileIndex];
+            FileIO *handle     = fOpen(rsdkContainer.packNames[file->packID], "rb");
+            if (!handle)
+                return -1;
+
+            int size = file->filesize < maxSize ? file->filesize : maxSize;
+            fSeek(handle, file->offset, SEEK_SET);
+            int got = (int)fRead(dest, 1, size, handle);
+            fClose(handle);
+            if (got < size)
+                memset(dest + got, 0, size - got);
+
+            if (file->encrypted) {
+                // same stream cipher as FileRead(), with local state
+                byte strA[0x10], strB[0x10];
+                int vSize = file->filesize;
+                GenerateELoadKeysLocal(vSize, (vSize >> 1) + 1, strA, strB);
+                byte stringNo = (vSize & 0x1FC) >> 2;
+                byte posA = 0, posB = 8, nybbleSwap = 0;
+
+                for (int i = 0; i < size; ++i) {
+                    byte data = strB[posB] ^ stringNo ^ dest[i];
+                    if (nybbleSwap)
+                        data = ((data << 4) + (data >> 4)) & 0xFF;
+                    dest[i] = data ^ strA[posA];
+
+                    ++posA;
+                    ++posB;
+                    if (posA <= 0x0F) {
+                        if (posB > 0x0C) {
+                            posB = 0;
+                            nybbleSwap ^= 0x01;
+                        }
+                    }
+                    else if (posB <= 0x08) {
+                        posA = 0;
+                        nybbleSwap ^= 0x01;
+                    }
+                    else {
+                        stringNo += 2;
+                        stringNo &= 0x7F;
+
+                        int key1  = mulUnsignedHigh(0xAAAAAAAB, stringNo); // ENC_KEY_1
+                        int key2  = mulUnsignedHigh(0x24924925, stringNo); // ENC_KEY_2
+                        int temp1 = key2 + (stringNo - key2) / 2;
+                        int temp2 = key1 / 8 * 3;
+                        if (nybbleSwap != 0) {
+                            nybbleSwap = 0;
+                            posA       = stringNo - temp1 / 4 * 7;
+                            posB       = stringNo - temp2 * 4 + 2;
+                        }
+                        else {
+                            nybbleSwap = 1;
+                            posB       = stringNo - temp1 / 4 * 7;
+                            posA       = stringNo - temp2 * 4 + 3;
+                        }
+                    }
+                }
+            }
+            return size;
+        }
+    }
+
+    // loose file (same prefixing rules as LoadFile)
+    char fullPath[0x200];
+#if RETRO_PLATFORM == RETRO_OSX || RETRO_PLATFORM == RETRO_ANDROID
+    if (addPath)
+        sprintf(fullPath, "%s/%s", gamePath, pathBuf);
+    else
+        StrCopy(fullPath, pathBuf);
+#else
+    (void)addPath;
+    StrCopy(fullPath, pathBuf);
+#endif
+
+    FileIO *handle = fOpen(fullPath, "rb");
+    if (!handle)
+        return -1;
+    fSeek(handle, 0, SEEK_END);
+    int fileLen = (int)fTell(handle);
+    fSeek(handle, 0, SEEK_SET);
+    int size = fileLen < maxSize ? fileLen : maxSize;
+    int got  = (int)fRead(dest, 1, size, handle);
+    fClose(handle);
+    return got;
+}
+#endif
+
 void GenerateELoadKeys(uint key1, uint key2)
 {
     char buffer[0x20];

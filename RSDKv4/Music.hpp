@@ -13,7 +13,16 @@
 
 #define MIX_BUFFER_SAMPLES (256)
 
-#if RETRO_USING_SDL1 || RETRO_USING_SDL2
+#if RETRO_USING_SDL2
+
+// SDL_LockAudio() only locks the legacy device id 1, but the engine opens its device with SDL_OpenAudioDevice (ids start at 2),
+// so it never actually excluded the audio thread: sounds and music could be changed or freed while being mixed
+// (fix from the PS Vita port)
+extern SDL_AudioDeviceID audioDevice;
+#define LockAudioDevice()   SDL_LockAudioDevice(audioDevice)
+#define UnlockAudioDevice() SDL_UnlockAudioDevice(audioDevice)
+
+#elif RETRO_USING_SDL1
 
 #define LockAudioDevice()   SDL_LockAudio()
 #define UnlockAudioDevice() SDL_UnlockAudio()
@@ -74,6 +83,12 @@ extern StreamInfo streamInfo[STREAMFILE_COUNT];
 
 void ProcessMusicStream(Sint32 *stream, size_t bytes_wanted);
 void LoadMusic(void *userdata);
+
+// Load music on one background loader thread, with thread-safe file reads (Xbox 360, from the PS Vita port: see Music.cpp)
+#define RETRO_ASYNC_MUSIC (RETRO_USING_SDL2 && !RETRO_USE_ORIGINAL_CODE && RETRO_PLATFORM == RETRO_XBOX_360)
+#if RETRO_ASYNC_MUSIC
+void InitMusicLoader();
+#endif
 void SetMusicTrack(const char *filePath, byte trackID, bool loop, uint loopPoint);
 void SwapMusicTrack(const char *filePath, byte trackID, uint loopPoint, uint ratio);
 bool PlayMusic(int track, int musStartPos, bool async = false);

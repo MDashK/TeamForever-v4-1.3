@@ -163,6 +163,51 @@ int SDL_UnlockMutex(SDL_mutex* mutex)
 }
 
 
+/* ----- Semaphores ----- */
+
+SDL_sem* SDL_CreateSemaphore(Uint32 initial_value)
+{
+	HANDLE handle = CreateSemaphore(nullptr, (LONG)initial_value, 0x7fffffff, nullptr);
+	if (nullptr == handle)
+	{
+		sdl2lite::setError("CreateSemaphore failed (error %u)", (unsigned)GetLastError());
+		return nullptr;
+	}
+	return reinterpret_cast<SDL_sem*>(handle);
+}
+
+void SDL_DestroySemaphore(SDL_sem* sem)
+{
+	if (nullptr != sem)
+		CloseHandle(reinterpret_cast<HANDLE>(sem));
+}
+
+int SDL_SemWaitTimeout(SDL_sem* sem, Uint32 ms)
+{
+	if (nullptr == sem)
+		return SDL_InvalidParamError("sem");
+	const DWORD result = WaitForSingleObject(reinterpret_cast<HANDLE>(sem), (ms == SDL_MUTEX_MAXWAIT) ? INFINITE : ms);
+	return (result == WAIT_OBJECT_0) ? 0 : SDL_MUTEX_TIMEDOUT;
+}
+
+int SDL_SemWait(SDL_sem* sem)
+{
+	return SDL_SemWaitTimeout(sem, SDL_MUTEX_MAXWAIT);
+}
+
+int SDL_SemTryWait(SDL_sem* sem)
+{
+	return SDL_SemWaitTimeout(sem, 0);
+}
+
+int SDL_SemPost(SDL_sem* sem)
+{
+	if (nullptr == sem)
+		return SDL_InvalidParamError("sem");
+	return ReleaseSemaphore(reinterpret_cast<HANDLE>(sem), 1, nullptr) ? 0 : SDL_SetError("ReleaseSemaphore failed");
+}
+
+
 /* ----- Condition variables ----- */
 
 SDL_cond* SDL_CreateCond(void)

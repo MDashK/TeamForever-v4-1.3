@@ -150,9 +150,159 @@ void freeMusInfo()
 }
 #endif
 
+#if RETRO_ASYNC_MUSIC
+// ---------------------------------------------------------------------------------------------
+// Background music loader (from the PS Vita port)
+// PlayMusic() only records a request; one loader thread reads the OGG (with ReadWholeFileThreadSafe: the engine's file
+// reader is global state that the game thread uses at the same time) into the stream slot that isn't playing, and the
+// slot is swapped in under musicMutex. Before, every track change started a new thread that used the global file reader
+// (racing the game's own file loads), and a track requested while another was loading was dropped.
+// Each request gets a generation number: a newer request, or StopMusic(), supersedes a load that's still running.
+// ---------------------------------------------------------------------------------------------
+struct MusicLoadRequest {
+    char fileName[0x40];
+    bool loop;
+    uint loopPoint;
+    bool resume;           // continue from the previous track's position (SwapMusicTrack), or start at startPosition
+    double startPosition;  // in samples
+    int generation;
+};
+
+static volatile int musicGeneration = 0;
+static SDL_Thread *musicLoadThread  = NULL;
+static SDL_sem *musicLoadSem        = NULL;
+static SDL_mutex *musicRequestLock  = NULL;
+static MusicLoadRequest pendingMusicRequest;
+static bool musicRequestPending = false;
+
+static void ClearStreamSlot(int slot)
+{
+    StreamInfo *strmInfo = &streamInfo[slot];
+    if (strmInfo->loaded) {
+#if RETRO_USING_SDL2
+        if (strmInfo->stream)
+            SDL_FreeAudioStream(strmInfo->stream);
+#endif
+        ov_clear(&strmInfo->vorbisFile);
+    }
+#if RETRO_USING_SDL2
+    strmInfo->stream = NULL;
+#endif
+    strmInfo->loaded = false;
+}
+
+static void LoadMusicAsync(const MusicLoadRequest *request)
+{
+    // only this thread changes currentStreamIndex, so the other slot is ours: the audio thread only reads the current one
+    SDL_LockMutex(musicMutex);
+    int slot = 1 - currentStreamIndex;
+    SDL_UnlockMutex(musicMutex);
+    ClearStreamSlot(slot);
+
+    StreamInfo *strmInfo = &streamInfo[slot];
+    StreamFile *musFile  = &streamFile[slot];
+    bool success         = false;
+    Uint32 loadStart     = SDL_GetTicks();
+
+    int size = ReadWholeFileThreadSafe(request->fileName, musFile->buffer, MUSBUFFER_SIZE);
+    if (size > 0) {
+        musFile->fileSize = size;
+        musFile->filePos  = 0;
+
+        ov_callbacks callbacks;
+        callbacks.read_func  = readVorbis;
+        callbacks.seek_func  = seekVorbis;
+        callbacks.tell_func  = tellVorbis;
+        callbacks.close_func = closeVorbis;
+
+        int error = ov_open_callbacks(musFile, &strmInfo->vorbisFile, NULL, 0, callbacks);
+        if (error == 0) {
+            strmInfo->loaded        = true;
+            strmInfo->vorbBitstream = -1;
+            strmInfo->vorbisFile.vi = ov_info(&strmInfo->vorbisFile, -1);
+
+            unsigned long long samples = (unsigned long long)ov_pcm_total(&strmInfo->vorbisFile, -1);
+#if RETRO_USING_SDL2
+            strmInfo->stream = SDL_NewAudioStream(AUDIO_S16, strmInfo->vorbisFile.vi->channels, (int)strmInfo->vorbisFile.vi->rate,
+                                                  audioDeviceFormat.format, audioDeviceFormat.channels, audioDeviceFormat.freq);
+            if (!strmInfo->stream)
+                PrintLog("Failed to create stream: %s", SDL_GetError());
+            success = strmInfo->stream != NULL;
+#else
+            success = true;
+#endif
+
+            if (request->resume && samples)
+                ov_pcm_seek(&strmInfo->vorbisFile, (ogg_int64_t)fmod(request->startPosition, (double)samples));
+
+            strmInfo->trackLoop = request->loop;
+            strmInfo->loopPoint = request->loopPoint;
+        }
+        else {
+            PrintLog("Failed to load vorbis '%s'! error: %d", request->fileName, error);
+        }
+    }
+    else {
+        PrintLog("Couldn't load music file '%s'", request->fileName);
+    }
+
+    bool current = false;
+    SDL_LockMutex(musicMutex);
+    if (request->generation == musicGeneration) { // nothing newer was requested (or stopped) in the meantime
+        current = true;
+        if (success) {
+            currentStreamIndex = slot;
+            musicPosition      = 0;
+            if (musicStatus == MUSIC_LOADING)
+                musicStatus = MUSIC_PLAYING;
+        }
+        else {
+            musicStatus = MUSIC_STOPPED;
+            trackID     = -1;
+        }
+    }
+    SDL_UnlockMutex(musicMutex);
+
+    if (!current || !success)
+        ClearStreamSlot(slot); // superseded or failed: nothing will play it
+
+    PrintLog("music: %s '%s' in %d ms%s", success ? "loaded" : "failed", request->fileName, (int)(SDL_GetTicks() - loadStart),
+             current ? "" : " (superseded)");
+}
+
+static int MusicLoadThread(void *)
+{
+    while (true) {
+        SDL_SemWait(musicLoadSem);
+
+        MusicLoadRequest request;
+        SDL_LockMutex(musicRequestLock);
+        bool pending        = musicRequestPending;
+        request             = pendingMusicRequest;
+        musicRequestPending = false;
+        SDL_UnlockMutex(musicRequestLock);
+
+        if (pending)
+            LoadMusicAsync(&request);
+    }
+    return 0;
+}
+
+void InitMusicLoader()
+{
+    if (musicLoadThread)
+        return;
+    musicLoadSem     = SDL_CreateSemaphore(0);
+    musicRequestLock = SDL_CreateMutex();
+    musicLoadThread  = SDL_CreateThreadWithStackSize(MusicLoadThread, "MusicLoader", 0x40000, NULL);
+    if (!musicLoadThread)
+        PrintLog("Failed to create music loader thread: %s", SDL_GetError());
+}
+#endif
+
 void LoadMusic(void *userdata)
 {
-    // This function runs in a separate thread, so it needs to be careful with shared data.
+    // Synchronous load (the original path; with RETRO_ASYNC_MUSIC only used if the loader thread couldn't start).
     // It prepares the "back buffer" and then swaps it with the active one.
 
     SDL_LockMutex(musicMutex);
@@ -288,50 +438,83 @@ void SwapMusicTrack(const char *filePath, byte trackID, uint loopPoint, uint rat
 
 bool PlayMusic(int track, int musStartPos, bool async)
 {
-#if RETRO_PLATFORM == RETRO_PS3 || RETRO_PLATFORM == RETRO_XBOX_360
-    if (musicStatus == MUSIC_PLAYING || musicStatus == MUSIC_PAUSED) {
-        async = true;
-    }
-#endif
-
     if (!audioEnabled)
         return false;
 
-    if (musicTracks[track].fileName[0]) {
-        if (musicStatus != MUSIC_LOADING) {
-            LockAudioDevice();
-            if (track < 0 || track >= TRACK_COUNT) {
-                StopMusic(true);
-                currentMusicTrack = -1;
-                return false;
-            }
+    if (track < 0 || track >= TRACK_COUNT) {
+        StopMusic(true);
+        currentMusicTrack = -1;
+        return false;
+    }
+    if (!musicTracks[track].fileName[0])
+        return false;
+
+#if RETRO_ASYNC_MUSIC
+    if (musicLoadThread) {
+        MusicLoadRequest request;
+        StrCopy(request.fileName, musicTracks[track].fileName);
+        request.loop      = musicTracks[track].trackLoop;
+        request.loopPoint = musicTracks[track].loopPoint;
+
+        SDL_LockMutex(musicMutex);
+        // musStartPos != 0: continue from the playing track's position scaled by musicRatio (SwapMusicTrack: 8,000 == 0.8,
+        // 10,000 == 1.0), or start at musStartPos if nothing is playing, as the synchronous load did
+        request.resume = musStartPos != 0;
+        if (streamInfo[currentStreamIndex].loaded)
+            request.startPosition = musicPosition * ((double)musicRatio * 0.0001);
+        else
+            request.startPosition = musStartPos;
+        request.generation = ++musicGeneration;
+        // the old track goes quiet straight away, the new one starts as soon as it's loaded.
+        // everything the scripts can see is updated now, as the old synchronous load did
+        musicStatus       = MUSIC_LOADING;
+        trackID           = track;
+        masterVolume      = MAX_VOLUME;
+        musicStartPos     = 0;
+        currentMusicTrack = -1;
+        SDL_UnlockMutex(musicMutex);
+
+        SDL_LockMutex(musicRequestLock);
+        pendingMusicRequest = request; // a newer request simply replaces one that hasn't started yet
+        musicRequestPending = true;
+        SDL_UnlockMutex(musicRequestLock);
+        SDL_SemPost(musicLoadSem);
+        return true;
+    }
+#endif
+
+    if (musicStatus != MUSIC_LOADING) {
+#if RETRO_PLATFORM == RETRO_PS3
+        if (async || musicStatus == MUSIC_PLAYING || musicStatus == MUSIC_PAUSED) {
             musicStartPos     = musStartPos;
             currentMusicTrack = track;
             musicStatus       = MUSIC_LOADING;
-            if (async) {
-                SDL_Thread *thread = SDL_CreateThread((SDL_ThreadFunction)LoadMusic, "LoadMusic", NULL);
-                if (thread) {
-                    SDL_DetachThread(thread); // Detach the thread
-                } else {
-                    // Fallback to synchronous loading if thread creation failed
-                    // Optionally, add RSDK::PrintLog(PRINT_ERROR, "Failed to create SDL_Thread for LoadMusic, loading synchronously.");
-                    LoadMusic(NULL);
-                }
-            } else {
-                LoadMusic(NULL);
+            SDL_Thread *thread = SDL_CreateThread((SDL_ThreadFunction)LoadMusic, "LoadMusic", NULL);
+            if (thread) {
+                SDL_DetachThread(thread);
+                return true;
             }
-            return true;
         }
-        else {
-            PrintLog("WARNING music tried to play while music was loading!");
-        }
+#endif
+        // synchronous load on the calling thread (no device lock: the file is read while it would be held, which would
+        // stall the audio thread; LoadMusic swaps the streams under musicMutex)
+        musicStartPos     = musStartPos;
+        currentMusicTrack = track;
+        musicStatus       = MUSIC_LOADING;
+        LoadMusic(NULL);
+        return true;
     }
-
+    PrintLog("WARNING music tried to play while music was loading!");
     return false;
 }
 
 void StopMusic(bool setStatus)
 {
+#if RETRO_ASYNC_MUSIC
+    SDL_LockMutex(musicMutex);
+    ++musicGeneration; // cancels any track that's still loading
+    SDL_UnlockMutex(musicMutex);
+#endif
     if (setStatus) {
         musicStatus = MUSIC_STOPPED;
 		trackID = -1;

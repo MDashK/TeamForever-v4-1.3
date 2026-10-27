@@ -26,9 +26,11 @@ int jumpTableDataOffset = 0;
 
 #if RETRO_USE_COMPILER
 #if !RETRO_REV00
-#define COMMONALIAS_COUNT (0x75)
+// must match the number of built-in entries in publicAliases[] (the RETRO_UWP/LINUX/SWITCH platform aliases were past the old count,
+// so they got wiped on every script reset and "case RETRO_SWITCH" never matched)
+#define COMMONALIAS_COUNT (0x78)
 #else
-#define COMMONALIAS_COUNT (0x74)
+#define COMMONALIAS_COUNT (0x77)
 #endif
 #define ALIAS_COUNT_TRIM (0xE0)
 #define ALIAS_COUNT      (COMMONALIAS_COUNT + ALIAS_COUNT_TRIM)
@@ -2578,7 +2580,9 @@ void AppendIntegerToString(char *text, int value)
 
     v = 0;
     for (int i = cnt - 1; i >= 0; --i) {
-        v = value / pow(10, i);
+        int div = 1;
+        for (int p = 0; p < i; ++p) div *= 10;
+        v = value / div; // integer math, pow() is inexact with -ffast-math and broke jump table ids (10 -> "00")
         v %= 10;
 
         int strValue = v + '0';
@@ -2609,7 +2613,9 @@ void AppendIntegerToStringW(ushort *text, int value)
 
     v = 0;
     for (int i = cnt - 1; i >= 0; --i) {
-        v = value / pow(10, i);
+        int div = 1;
+        for (int p = 0; p < i; ++p) div *= 10;
+        v = value / div; // integer math, pow() is inexact with -ffast-math and broke jump table ids (10 -> "00")
         v %= 10;
 
         int strValue = v + '0';
@@ -3248,6 +3254,310 @@ void LoadBytecode(int stageListID, int scriptID)
         CloseFile();
     }
 }
+
+#if RETRO_SCRIPT_CACHE
+// ---------------------------------------------------------------------------------------------
+// Compiled script cache
+// Every stage load recompiles the global object scripts and the stage's own scripts from text, which is the slowest part
+// of loading on the vita and the Xbox 360 (same cache as the PS Vita port). The result only depends on the game config, the mods and the stage folder, so the compiler state
+// is snapshotted after compiling and restored on later loads:
+//  - one snapshot of the global scripts
+//  - one snapshot per stage folder (globals + stage scripts), kept within a memory budget (least recently used goes first)
+// LoadGameConfig() (boot, mod changes) invalidates everything.
+// ---------------------------------------------------------------------------------------------
+#include <vector>
+#include <string>
+
+struct CachedTable {
+    char name[0x20];
+    int valueCount;
+    int dataPos;
+    int firstValue; // index into ScriptCacheSnapshot::tableValues
+};
+
+struct ScriptCacheSnapshot {
+    bool valid = false;
+    std::string key;
+    unsigned int lastUse = 0;
+
+    std::vector<int> scriptData;
+    std::vector<int> jumpTableData;
+    int scriptDataPos = 0, scriptDataOffset = 0, jumpTableDataPos = 0, jumpTableDataOffset = 0;
+
+    std::vector<ScriptPtr> objectEvents; // main, draw, startup for every object type
+    std::vector<ScriptPtr> functions;
+    std::vector<char> functionNames;
+    int functionCount = 0;
+
+    std::vector<AliasInfo> aliases;
+    std::vector<StaticInfo> statics;
+    std::vector<CachedTable> tables;
+    std::vector<TableValue> tableValues;
+
+    size_t Bytes() const
+    {
+        return scriptData.size() * sizeof(int) + jumpTableData.size() * sizeof(int) + objectEvents.size() * sizeof(ScriptPtr)
+               + functions.size() * sizeof(ScriptPtr) + functionNames.size() + aliases.size() * sizeof(AliasInfo)
+               + statics.size() * sizeof(StaticInfo) + tables.size() * sizeof(CachedTable) + tableValues.size() * sizeof(TableValue);
+    }
+};
+
+#define SCRIPTCACHE_STAGE_BUDGET (24 * 1024 * 1024)
+
+static ScriptCacheSnapshot globalScriptCache;
+static std::vector<ScriptCacheSnapshot> stageScriptCache;
+static unsigned int scriptCacheClock = 0;
+
+static void SnapshotSave(ScriptCacheSnapshot &c, const std::string &key)
+{
+    c.key     = key;
+    c.lastUse = ++scriptCacheClock;
+
+    c.scriptData.assign(scriptData, scriptData + scriptDataPos);
+    c.jumpTableData.assign(jumpTableData, jumpTableData + jumpTableDataPos);
+    c.scriptDataPos       = scriptDataPos;
+    c.scriptDataOffset    = scriptDataOffset;
+    c.jumpTableDataPos    = jumpTableDataPos;
+    c.jumpTableDataOffset = jumpTableDataOffset;
+
+    c.objectEvents.resize(OBJECT_COUNT * 3);
+    for (int o = 0; o < OBJECT_COUNT; ++o) {
+        c.objectEvents[o * 3 + 0] = objectScriptList[o].eventMain;
+        c.objectEvents[o * 3 + 1] = objectScriptList[o].eventDraw;
+        c.objectEvents[o * 3 + 2] = objectScriptList[o].eventStartup;
+    }
+
+    c.functionCount = scriptFunctionCount;
+    c.functions.assign(functionScriptList, functionScriptList + FUNCTION_COUNT);
+    c.functionNames.assign(&scriptFunctionNames[0][0], &scriptFunctionNames[0][0] + scriptFunctionCount * 0x40);
+
+    c.aliases.assign(publicAliases, publicAliases + publicAliasCount);
+    c.statics.assign(publicStaticVariables, publicStaticVariables + publicStaticVarCount);
+
+    c.tables.clear();
+    c.tableValues.clear();
+    for (int i = 0; i < publicTableCount; ++i) {
+        CachedTable t;
+        StrCopy(t.name, publicTables[i].name);
+        t.valueCount = publicTables[i].valueCount;
+        t.dataPos    = publicTables[i].dataPos;
+        t.firstValue = (int)c.tableValues.size();
+        c.tables.push_back(t);
+        c.tableValues.insert(c.tableValues.end(), publicTables[i].values, publicTables[i].values + t.valueCount);
+    }
+
+    c.valid = true;
+}
+
+static void SnapshotRestore(ScriptCacheSnapshot &c)
+{
+    c.lastUse = ++scriptCacheClock;
+
+    // ClearScriptData() has already reset everything at the start of the load, just put the compiled state back
+    memcpy(scriptData, c.scriptData.data(), c.scriptData.size() * sizeof(int));
+    memcpy(jumpTableData, c.jumpTableData.data(), c.jumpTableData.size() * sizeof(int));
+    if (scriptDataPos > c.scriptDataPos) // only happens if something was compiled before restoring (not the case now)
+        memset(&scriptData[c.scriptDataPos], 0, (scriptDataPos - c.scriptDataPos) * sizeof(int));
+    if (jumpTableDataPos > c.jumpTableDataPos)
+        memset(&jumpTableData[c.jumpTableDataPos], 0, (jumpTableDataPos - c.jumpTableDataPos) * sizeof(int));
+    scriptDataPos       = c.scriptDataPos;
+    scriptDataOffset    = c.scriptDataOffset;
+    jumpTableDataPos    = c.jumpTableDataPos;
+    jumpTableDataOffset = c.jumpTableDataOffset;
+
+    for (int o = 0; o < OBJECT_COUNT; ++o) {
+        objectScriptList[o].eventMain    = c.objectEvents[o * 3 + 0];
+        objectScriptList[o].eventDraw    = c.objectEvents[o * 3 + 1];
+        objectScriptList[o].eventStartup = c.objectEvents[o * 3 + 2];
+    }
+
+    scriptFunctionCount = c.functionCount;
+    memcpy(functionScriptList, c.functions.data(), sizeof(functionScriptList));
+    if (!c.functionNames.empty())
+        memcpy(scriptFunctionNames, c.functionNames.data(), c.functionNames.size());
+
+    publicAliasCount = (int)c.aliases.size();
+    for (int i = 0; i < publicAliasCount; ++i) publicAliases[i] = c.aliases[i];
+    publicStaticVarCount = (int)c.statics.size();
+    for (int i = 0; i < publicStaticVarCount; ++i) publicStaticVariables[i] = c.statics[i];
+    publicTableCount = (int)c.tables.size();
+    for (int i = 0; i < publicTableCount; ++i) {
+        const CachedTable &t = c.tables[i];
+        TableInfo *table     = &publicTables[i];
+        StrCopy(table->name, t.name);
+        table->valueCount = t.valueCount;
+        table->dataPos    = t.dataPos;
+        for (int v = 0; v < t.valueCount; ++v) table->values[v] = c.tableValues[t.firstValue + v];
+    }
+
+    jumpTableStackPos     = 0;
+    lineID                = 0;
+    privateAliasCount     = 0;
+    privateStaticVarCount = 0;
+    privateTableCount     = 0;
+    currentTable          = NULL;
+}
+
+// Debug: compares the current (freshly compiled) state with a snapshot, only what the scripts can observe
+static bool SnapshotVerify(const ScriptCacheSnapshot &c, const char *what)
+{
+    int errors = 0;
+#define CACHE_CHECK(cond, ...)                                                                                                                       \
+    if (!(cond)) {                                                                                                                                   \
+        if (errors++ < 16)                                                                                                                           \
+            PrintLog(__VA_ARGS__);                                                                                                                   \
+    }
+
+    CACHE_CHECK(c.scriptDataPos == scriptDataPos && c.scriptDataOffset == scriptDataOffset, "[scriptcache] scriptDataPos %d/%d vs %d/%d",
+                c.scriptDataPos, c.scriptDataOffset, scriptDataPos, scriptDataOffset);
+    CACHE_CHECK(c.jumpTableDataPos == jumpTableDataPos && c.jumpTableDataOffset == jumpTableDataOffset, "[scriptcache] jumpTablePos %d/%d vs %d/%d",
+                c.jumpTableDataPos, c.jumpTableDataOffset, jumpTableDataPos, jumpTableDataOffset);
+    CACHE_CHECK(c.scriptData.size() == (size_t)scriptDataPos && !memcmp(c.scriptData.data(), scriptData, c.scriptData.size() * sizeof(int)),
+                "[scriptcache] scriptData differs");
+    CACHE_CHECK(c.jumpTableData.size() == (size_t)jumpTableDataPos
+                    && !memcmp(c.jumpTableData.data(), jumpTableData, c.jumpTableData.size() * sizeof(int)),
+                "[scriptcache] jumpTableData differs");
+    for (int o = 0; o < OBJECT_COUNT; ++o) {
+        CACHE_CHECK(!memcmp(&c.objectEvents[o * 3 + 0], &objectScriptList[o].eventMain, sizeof(ScriptPtr))
+                        && !memcmp(&c.objectEvents[o * 3 + 1], &objectScriptList[o].eventDraw, sizeof(ScriptPtr))
+                        && !memcmp(&c.objectEvents[o * 3 + 2], &objectScriptList[o].eventStartup, sizeof(ScriptPtr)),
+                    "[scriptcache] object %d events differ", o);
+    }
+    CACHE_CHECK(c.functionCount == scriptFunctionCount, "[scriptcache] function count %d vs %d", c.functionCount, scriptFunctionCount);
+    for (int f = 0; f < FUNCTION_COUNT; ++f) {
+        CACHE_CHECK(!memcmp(&c.functions[f], &functionScriptList[f], sizeof(ScriptPtr)), "[scriptcache] function %d ptr differs", f);
+        if (f < scriptFunctionCount && f < c.functionCount)
+            CACHE_CHECK(StrComp(&c.functionNames[f * 0x40], scriptFunctionNames[f]), "[scriptcache] function %d name differs", f);
+    }
+    CACHE_CHECK(c.aliases.size() == (size_t)publicAliasCount, "[scriptcache] alias count %d vs %d", (int)c.aliases.size(), publicAliasCount);
+    for (int i = 0; i < (int)c.aliases.size() && i < publicAliasCount; ++i)
+        CACHE_CHECK(StrComp(c.aliases[i].name, publicAliases[i].name) && StrComp(c.aliases[i].value, publicAliases[i].value),
+                    "[scriptcache] alias %d differs", i);
+    CACHE_CHECK(c.statics.size() == (size_t)publicStaticVarCount, "[scriptcache] static count %d vs %d", (int)c.statics.size(), publicStaticVarCount);
+    for (int i = 0; i < (int)c.statics.size() && i < publicStaticVarCount; ++i)
+        CACHE_CHECK(StrComp(c.statics[i].name, publicStaticVariables[i].name) && c.statics[i].value == publicStaticVariables[i].value
+                        && c.statics[i].dataPos == publicStaticVariables[i].dataPos,
+                    "[scriptcache] static %d differs", i);
+    CACHE_CHECK(c.tables.size() == (size_t)publicTableCount, "[scriptcache] table count %d vs %d", (int)c.tables.size(), publicTableCount);
+    for (int i = 0; i < (int)c.tables.size() && i < publicTableCount; ++i) {
+        const CachedTable &a = c.tables[i];
+        TableInfo &b         = publicTables[i];
+        bool same            = StrComp(a.name, b.name) && a.valueCount == b.valueCount && a.dataPos == b.dataPos;
+        for (int v = 0; same && v < a.valueCount; ++v)
+            same = c.tableValues[a.firstValue + v].value == b.values[v].value && c.tableValues[a.firstValue + v].dataPos == b.values[v].dataPos;
+        CACHE_CHECK(same, "[scriptcache] table %d differs", i);
+    }
+#undef CACHE_CHECK
+
+    PrintLog("[scriptcache] verify %s: %s (%d differences)", what, errors ? "FAILED" : "OK", errors);
+    return errors == 0;
+}
+
+static std::string GlobalCacheKey(int keyA, int keyB)
+{
+    char buf[0x40];
+    sprintf(buf, "globals|%d|%d", keyA, keyB);
+    return buf;
+}
+static std::string StageCacheKey(const char *folder, int scriptIDStart, int keyA, int keyB)
+{
+    char buf[0x80];
+    sprintf(buf, "%s|%d|%d|%d", folder, scriptIDStart, keyA, keyB);
+    return buf;
+}
+static ScriptCacheSnapshot *FindStageSnapshot(const std::string &key)
+{
+    for (auto &snap : stageScriptCache)
+        if (snap.valid && snap.key == key)
+            return &snap;
+    return NULL;
+}
+
+void ScriptCacheInvalidate()
+{
+    globalScriptCache.valid = false;
+    stageScriptCache.clear();
+}
+
+// debug: with BASE_PATH/verifyscriptcache.txt present everything is always compiled and compared against the cache
+bool ScriptCacheVerifyMode()
+{
+    static int mode = -1;
+    if (mode < 0) {
+        FileIO *file = fOpen(BASE_PATH "verifyscriptcache.txt", "rb");
+        mode         = file != NULL;
+        if (file)
+            fClose(file);
+    }
+    return mode == 1;
+}
+
+void ScriptCacheSave(int keyA, int keyB) { SnapshotSave(globalScriptCache, GlobalCacheKey(keyA, keyB)); }
+
+bool ScriptCacheRestore(int keyA, int keyB)
+{
+    if (!globalScriptCache.valid || globalScriptCache.key != GlobalCacheKey(keyA, keyB))
+        return false;
+    SnapshotRestore(globalScriptCache);
+    return true;
+}
+
+bool ScriptCacheVerify(int keyA, int keyB)
+{
+    if (!globalScriptCache.valid || globalScriptCache.key != GlobalCacheKey(keyA, keyB))
+        return true;
+    return SnapshotVerify(globalScriptCache, "globals");
+}
+
+void ScriptCacheSaveStage(const char *folder, int scriptIDStart, int keyA, int keyB)
+{
+    std::string key            = StageCacheKey(folder, scriptIDStart, keyA, keyB);
+    ScriptCacheSnapshot *entry = FindStageSnapshot(key);
+    if (!entry) {
+        stageScriptCache.emplace_back();
+        entry = &stageScriptCache.back();
+    }
+    SnapshotSave(*entry, key);
+
+    // keep the cache within budget, dropping the least recently used stages (never the one just saved)
+    size_t total = 0;
+    for (auto &snap : stageScriptCache) total += snap.Bytes();
+    while (total > SCRIPTCACHE_STAGE_BUDGET && stageScriptCache.size() > 1) {
+        size_t oldest = 0;
+        for (size_t i = 1; i < stageScriptCache.size(); ++i)
+            if (stageScriptCache[i].lastUse < stageScriptCache[oldest].lastUse)
+                oldest = i;
+        if (stageScriptCache[oldest].key == key)
+            break;
+        total -= stageScriptCache[oldest].Bytes();
+        stageScriptCache.erase(stageScriptCache.begin() + oldest);
+    }
+    PrintLog("[scriptcache] saved stage '%s' (%d KB, %d stages, %d KB total)", folder, (int)(FindStageSnapshot(key)->Bytes() / 1024),
+             (int)stageScriptCache.size(), (int)(total / 1024));
+}
+
+bool ScriptCacheRestoreStage(const char *folder, int scriptIDStart, int keyA, int keyB)
+{
+    ScriptCacheSnapshot *entry = FindStageSnapshot(StageCacheKey(folder, scriptIDStart, keyA, keyB));
+    if (!entry)
+        return false;
+    SnapshotRestore(*entry);
+    return true;
+}
+
+bool ScriptCacheHasStage(const char *folder, int scriptIDStart, int keyA, int keyB)
+{
+    return FindStageSnapshot(StageCacheKey(folder, scriptIDStart, keyA, keyB)) != NULL;
+}
+
+bool ScriptCacheVerifyStage(const char *folder, int scriptIDStart, int keyA, int keyB)
+{
+    ScriptCacheSnapshot *entry = FindStageSnapshot(StageCacheKey(folder, scriptIDStart, keyA, keyB));
+    if (!entry)
+        return true;
+    return SnapshotVerify(*entry, folder);
+}
+#endif
 
 void ClearScriptData()
 {

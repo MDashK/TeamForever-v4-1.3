@@ -1,4 +1,28 @@
 #include "RetroEngine.hpp"
+#if RETRO_PLATFORM == RETRO_XBOX_360
+// stage load timing, as in the PS Vita port: every load logs its total time, EngineDebugMode adds the time of each phase
+static Uint32 loadProfLast = 0, loadProfStart = 0;
+static void LoadProfMark(const char *name)
+{
+    Uint32 now = SDL_GetTicks();
+    if (!name)
+        loadProfStart = now;
+    else if (loadProfLast && engineDebugMode)
+        PrintLog("[load] %s: %d ms", name, (int)(now - loadProfLast));
+    loadProfLast = now;
+}
+static void LoadProfTotal()
+{
+    if (loadProfStart)
+        PrintLog("[load] stage loaded in %d ms", (int)(SDL_GetTicks() - loadProfStart));
+    loadProfStart = 0;
+}
+#define LOADPROF_MARK(name) LoadProfMark(name)
+#define LOADPROF_TOTAL()    LoadProfTotal()
+#else
+#define LOADPROF_MARK(name)
+#define LOADPROF_TOTAL()
+#endif
 
 int stageListCount[STAGELIST_MAX];
 char stageListNames[STAGELIST_MAX][0x20] = {
@@ -161,7 +185,11 @@ void ProcessStage(void)
             stageMode                    = STAGEMODE_NORMAL;
 
 #if RETRO_USE_MOD_LOADER
+            LOADPROF_MARK(NULL);
+#if RETRO_PLATFORM != RETRO_XBOX_360
             for (int m = 0; m < modList.size(); ++m) ScanModFolder(&modList[m]);
+#endif // on the 360 (as on the vita) the file lists from boot (LoadMod) are kept: rescanning every mod folder on each load is slow there
+            LOADPROF_MARK("mod folder scan");
 #endif
             ResetBackgroundSettings();
             LoadStageFiles();
@@ -593,6 +621,137 @@ void ProcessParallaxAutoScroll()
     for (int i = 0; i < vParallax.entryCount; ++i) vParallax.scrollPos[i] += vParallax.scrollSpeed[i];
 }
 
+
+#if RETRO_SCRIPT_CACHE
+#if defined(S1F_BUILD)
+#define RETRO_GAME_IS_S1F (1)
+#else
+#define RETRO_GAME_IS_S1F (0)
+#endif
+
+// Compiles one stage's scripts straight into the script cache without loading anything else (graphics, sounds, palettes, layout).
+// Mirrors the script-related part of LoadStageFiles(); the compiler state is wiped again afterwards.
+static void PrewarmStageScripts(int stageID)
+{
+    FileInfo info, infoStore;
+    byte fileBuffer  = 0;
+    byte fileBuffer2 = 0;
+    char strBuffer[0x100];
+    int scriptID = 1;
+    int keyA = -1, keyB = -1;
+    int stageSfx = 0;
+
+    ClearScriptData();
+
+    bool loadGlobals = false;
+    if (LoadStageFile("StageConfig.bin", stageID, &info)) {
+        FileRead(&fileBuffer, 1);
+        loadGlobals = fileBuffer;
+        CloseFile();
+    }
+
+    if (loadGlobals) {
+        if (!LoadFile("Data/Game/GameConfig.bin", &info))
+            return;
+        FileRead(&fileBuffer, 1);
+        FileSkip(fileBuffer); // title
+        FileRead(&fileBuffer, 1);
+        FileSkip(fileBuffer);   // description
+        FileSkip(0x60 * 3);     // palette
+
+        byte globalObjectCount = 0;
+        FileRead(&globalObjectCount, 1);
+        for (byte i = 0; i < globalObjectCount; ++i) {
+            FileRead(&fileBuffer2, 1);
+            FileRead(strBuffer, fileBuffer2);
+            strBuffer[fileBuffer2] = 0;
+            SetObjectTypeName(strBuffer, scriptID + i);
+        }
+        CloseFile();
+#if RETRO_USE_MOD_LOADER
+        for (byte i = 0; i < modObjCount; ++i) SetObjectTypeName(modTypeNames[i], globalObjectCount + i + 1);
+        keyB = modObjCount;
+#else
+        keyB = 0;
+#endif
+        keyA = globalObjectCount;
+        if (!ScriptCacheRestore(keyA, keyB)) // only prewarm on top of already compiled globals
+            return;
+        scriptID += globalObjectCount + keyB;
+    }
+
+    const char *folder = stageList[activeStageList][stageID].folder;
+    if (ScriptCacheHasStage(folder, scriptID, keyA, keyB)) {
+        ClearScriptData();
+        return;
+    }
+
+    int gameModeStore = Engine.gameMode;
+    if (LoadStageFile("StageConfig.bin", stageID, &info)) {
+        FileRead(&fileBuffer, 1); // load globals flag
+        FileSkip(0x20 * 3);      // stage palette
+
+        FileRead(&fileBuffer, 1);
+        stageSfx = fileBuffer;
+        for (int i = 0; i < stageSfx; ++i) { // the compiler resolves SfxName[] against these
+            FileRead(&fileBuffer2, 1);
+            FileRead(strBuffer, fileBuffer2);
+            strBuffer[fileBuffer2] = 0;
+            SetSfxName(strBuffer, globalSFXCount + i);
+        }
+        for (int i = 0; i < stageSfx; ++i) { // sfx paths, not needed
+            FileRead(&fileBuffer2, 1);
+            FileSkip(fileBuffer2);
+        }
+
+        byte stageObjectCount = 0;
+        FileRead(&stageObjectCount, 1);
+        for (byte i = 0; i < stageObjectCount; ++i) {
+            FileRead(&fileBuffer2, 1);
+            FileRead(strBuffer, fileBuffer2);
+            strBuffer[fileBuffer2] = 0;
+            SetObjectTypeName(strBuffer, scriptID + i);
+        }
+
+        bool ok = true;
+        for (byte i = 0; i < stageObjectCount && ok; ++i) {
+            FileRead(&fileBuffer2, 1);
+            FileRead(strBuffer, fileBuffer2);
+            strBuffer[fileBuffer2] = 0;
+            GetFileInfo(&infoStore);
+            CloseFile();
+            ParseScriptFile(strBuffer, scriptID + i);
+            SetFileInfo(&infoStore);
+            ok = Engine.gameMode != ENGINE_SCRIPTERROR;
+        }
+        CloseFile();
+
+        if (ok)
+            ScriptCacheSaveStage(folder, scriptID, keyA, keyB);
+        Engine.gameMode = gameModeStore; // a broken script will still error out when that stage is really loaded
+    }
+
+    for (int i = 0; i < stageSfx; ++i) sfxNames[globalSFXCount + i][0] = 0;
+    ClearScriptData();
+}
+
+// The S1 credits load a zone demo between every card while the credits music keeps playing, so every load there pushes the
+// pictures further behind the music. Before the credits start (music not playing yet, screen black) make sure every
+// regular stage's scripts are already compiled, so those loads only restore from the cache.
+static void PrewarmCreditsStages()
+{
+    int listStore = activeStageList;
+    activeStageList = STAGELIST_REGULAR;
+    for (int s = 0; s < stageListCount[STAGELIST_REGULAR]; ++s) {
+        bool seen = false; // acts of the same zone share a folder
+        for (int p = 0; p < s && !seen; ++p) seen = StrComp(stageList[STAGELIST_REGULAR][p].folder, stageList[STAGELIST_REGULAR][s].folder);
+        if (!seen)
+            PrewarmStageScripts(s);
+    }
+    activeStageList = listStore;
+}
+#endif
+
 void LoadStageFiles(void)
 {
     FileInfo infoStore;
@@ -600,14 +759,29 @@ void LoadStageFiles(void)
     byte fileBuffer  = 0;
     byte fileBuffer2 = 0;
     int scriptID     = 1;
+#if RETRO_SCRIPT_CACHE
+    int scriptCacheKeyA = -1, scriptCacheKeyB = -1; // identifies the compiled globals the stage scripts were built on
+#endif
     char strBuffer[0x100];
 
     StopAllSfx();
     if (!CheckCurrentStageFolder(stageListPosition)) {
         PrintLog("Loading Scene %s - %s", stageListNames[activeStageList], stageList[activeStageList][stageListPosition].name);
         ReleaseStageSfx();
+        LOADPROF_MARK("release sfx");
         ClearScriptData();
+        LOADPROF_MARK("clear script data");
         for (int i = SURFACE_COUNT; i > 0; i--) RemoveGraphicsFile((char *)"", i - 1);
+        LOADPROF_MARK("remove graphics");
+
+#if RETRO_SCRIPT_CACHE
+        // only the S1F build: its credits load a zone between cards (S2A's credits stay in one scene)
+        if (RETRO_GAME_IS_S1F && forceUseScripts && StrComp(stageList[activeStageList][stageListPosition].folder, "Credits")
+            && GetGlobalVariableByName("credits.screen") == 0) {
+            PrewarmCreditsStages();
+            LOADPROF_MARK("prewarm credits stages");
+        }
+#endif
 
 #if RETRO_USE_MOD_LOADER
         loadGlobalScripts = false;
@@ -652,6 +826,9 @@ void LoadStageFiles(void)
 #if RETRO_USE_COMPILER
 #if !RETRO_USE_ORIGINAL_CODE
 				bool bytecodeExists = false;
+#if RETRO_SCRIPT_CACHE
+				bool compiledGlobals = false, usedScriptCache = false;
+#endif
 				FileInfo bytecodeInfo;
 				GetFileInfo(&bytecodeInfo);
 				CloseFile();
@@ -672,6 +849,13 @@ void LoadStageFiles(void)
 					SetFileInfo(&infoStore);
 				}
 				else {
+#if RETRO_SCRIPT_CACHE
+					compiledGlobals = true;
+					usedScriptCache = !ScriptCacheVerifyMode() && ScriptCacheRestore(globalObjectCount, modObjCount);
+					if (usedScriptCache)
+						scriptID += globalObjectCount;
+					else
+#endif
 					for (byte i = 0; i < globalObjectCount; ++i) {
 						FileRead(&fileBuffer2, 1);
 						FileRead(strBuffer, fileBuffer2);
@@ -694,13 +878,21 @@ void LoadStageFiles(void)
 				CloseFile();
 
 #if RETRO_USE_MOD_LOADER
+				LOADPROF_MARK("global scripts (compile or cache)");
 				Engine.LoadXMLPalettes();
+				LOADPROF_MARK("xml palettes");
 #endif
 
 #if RETRO_USE_MOD_LOADER && RETRO_USE_COMPILER
 				globalObjCount = globalObjectCount;
 				for (byte i = 0; i < modObjCount && loadGlobalScripts; ++i) {
 					SetObjectTypeName(modTypeNames[i], scriptID);
+#if RETRO_SCRIPT_CACHE
+					if (usedScriptCache) { // already part of the restored globals
+						scriptID++;
+						continue;
+					}
+#endif
 
 					//SetFileInfo here was causing a crash when XML mods were mixed with non XML mods
 					//so GET IT THE FUCK OUTTA HERE
@@ -712,10 +904,21 @@ void LoadStageFiles(void)
 						return;
 				}
 #endif
+
+#if RETRO_SCRIPT_CACHE
+				scriptCacheKeyA = globalObjectCount;
+				scriptCacheKeyB = modObjCount;
+				if (compiledGlobals && !usedScriptCache) {
+					if (ScriptCacheVerifyMode())
+						ScriptCacheVerify(globalObjectCount, modObjCount);
+					ScriptCacheSave(globalObjectCount, modObjCount);
+				}
+#endif
 			}
         }
 
         if (LoadStageFile("StageConfig.bin", stageListPosition, &info)) {
+            LOADPROF_MARK("global scripts");
             FileRead(&fileBuffer, 1); // Load Globals
 
             byte clr[3];
@@ -743,6 +946,7 @@ void LoadStageFiles(void)
                 SetFileInfo(&infoStore);
             }
 
+            LOADPROF_MARK("stage sfx");
             byte stageObjectCount = 0;
             FileRead(&stageObjectCount, 1);
             for (byte i = 0; i < stageObjectCount; ++i) {
@@ -791,6 +995,11 @@ void LoadStageFiles(void)
                 SetFileInfo(&infoStore);
             }
             else {
+#if RETRO_SCRIPT_CACHE
+                const char *stageFolder = stageList[activeStageList][stageListPosition].folder;
+                bool stageCached = !ScriptCacheVerifyMode() && ScriptCacheRestoreStage(stageFolder, scriptID, scriptCacheKeyA, scriptCacheKeyB);
+                if (!stageCached) {
+#endif
                 for (byte i = 0; i < stageObjectCount; ++i) {
                     FileRead(&fileBuffer2, 1);
                     FileRead(strBuffer, fileBuffer2);
@@ -802,6 +1011,12 @@ void LoadStageFiles(void)
                     if (Engine.gameMode == ENGINE_SCRIPTERROR)
                         return;
                 }
+#if RETRO_SCRIPT_CACHE
+                    if (ScriptCacheVerifyMode())
+                        ScriptCacheVerifyStage(stageFolder, scriptID, scriptCacheKeyA, scriptCacheKeyB);
+                    ScriptCacheSaveStage(stageFolder, scriptID, scriptCacheKeyA, scriptCacheKeyB);
+                }
+#endif
             }
 #else
             for (byte i = 0; i < stageObjectCount; ++i) {
@@ -817,14 +1032,17 @@ void LoadStageFiles(void)
             CloseFile();
         }
 
+        LOADPROF_MARK("stage scripts");
         LoadStageGIFFile(stageListPosition);
         LoadStageCollisions();
         LoadStageBackground();
+        LOADPROF_MARK("tiles, collision, background");
     }
     else {
         PrintLog("Reloading Scene %s - %s", stageListNames[activeStageList], stageList[activeStageList][stageListPosition].name);
     }
     LoadStageChunks();
+    LOADPROF_MARK("chunks");
     for (int i = 0; i < TRACK_COUNT; ++i) SetMusicTrack("", i, false, 0);
 
     memset(objectEntityList, 0, ENTITY_COUNT * sizeof(Entity));
@@ -837,7 +1055,10 @@ void LoadStageFiles(void)
     }
     LoadActLayout();
     Init3DFloorBuffer(0);
+    LOADPROF_MARK("act layout");
     ProcessStartupObjects();
+    LOADPROF_MARK("startup objects");
+    LOADPROF_TOTAL();
 }
 int LoadActFile(const char *ext, int stageID, FileInfo *info)
 {
