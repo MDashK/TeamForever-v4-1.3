@@ -2,21 +2,23 @@
 
 Original source code forked from: https://github.com/DropSonic0/TeamForever-v4-1.3
 
+These ports are based on the original PS3 development by DropSonic0. Huge Special Thanks!
+
 
 ## Disclaimer
 * This port is AI assisted by Claude Opus.
 
 
-## Requirements
+# Requirements
 
-# Sonic 1 Forever
+## Sonic 1 Forever
 
 * You need to provide your own DATA.RSDK file.
 * MD5: ad10f658daf0f09b367ad7f23e35ff57
 * CRC32: fd57911c
 * Found in Sonic the Hedgehog 1 APK v3.0.0 up to v3.3.0_57
 
-# Sonic 2 Absolute
+## Sonic 2 Absolute
 
 * You need to provide your own DATA.RSDK file.
 * MD5: b7339e7a4cf4ae6264449eec06465c7c
